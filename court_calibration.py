@@ -187,10 +187,15 @@ class CourtCalibrator:
                 if len(src_pts) >= 4:
                     done[0] = True
                 else:
+                    # Warning: usa PIL come tutto il resto
                     warn = img[0].copy()
-                    self._txt(warn,
-                              f"Clicca almeno 4 punti! ({len(src_pts)}/4)",
-                              (16, 44), fs, (0, 60, 255))
+                    cv2.rectangle(warn, (0, 0), (w, hud_h), (20, 20, 20), -1)
+                    warn = draw_text_pil(
+                        warn,
+                        f"Clicca almeno 4 punti!  ({len(src_pts)}/4 cliccati)",
+                        (16, max(4, hud_h // 2 - font_big - 2)),
+                        font_big, (80, 80, 255)
+                    )
                     cv2.imshow("PadelVision — Calibrazione", warn)
 
             elif key == ord('z') or key == ord('Z'):  # Undo
@@ -201,11 +206,15 @@ class CourtCalibrator:
                     refresh()
 
             elif key == 27:  # ESC
+                for _ in range(5):
+                    cv2.waitKey(30)
                 cv2.destroyAllWindows()
                 raise RuntimeError("Calibrazione annullata.")
 
-        cv2.destroyAllWindows()
-        cv2.waitKey(1)   # flush eventi macOS → finestra si chiude davvero
+        # Chiusura affidabile su macOS: distruggi + flush event loop più volte
+        cv2.destroyWindow("PadelVision — Calibrazione")
+        for _ in range(10):
+            cv2.waitKey(30)
 
         # Calcola omografia
         src = np.float32(src_pts)
