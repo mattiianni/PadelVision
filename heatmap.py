@@ -63,7 +63,7 @@ def _draw_court(ax, alpha: float = 1.0):
         (0, 0, COURT_W, 0), (COURT_W, 0, COURT_W, COURT_L),
         (COURT_W, COURT_L, 0, COURT_L), (0, COURT_L, 0, 0),
     ]:
-        ax.plot([x0, x1], [y0, y1], linewidth=2.5, **{k: v for k, v in kw.items() if k != "linewidth"}, color="white", alpha=alpha)
+        ax.plot([x0, x1], [y0, y1], color="white", linewidth=2.5, alpha=alpha, solid_capstyle="round")
 
     net_y = COURT_L / 2
 
