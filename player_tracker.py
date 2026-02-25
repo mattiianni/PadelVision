@@ -45,6 +45,7 @@ class PlayerTracker:
         video_path: str,
         calibrator,
         sample_every: int = 2,
+        clip: float = 1.0,
         progress_callback=None,
     ) -> tuple[dict, float, int]:
         """
@@ -58,6 +59,7 @@ class PlayerTracker:
         cap = cv2.VideoCapture(video_path)
         fps          = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        stop_frame   = int(total_frames * max(0.01, min(1.0, clip)))
 
         all_detections = []  # lista di (cx, cy, frame_num)
         frame_num  = 0
@@ -66,7 +68,7 @@ class PlayerTracker:
 
         while True:
             ret, frame = cap.read()
-            if not ret:
+            if not ret or frame_num >= stop_frame:
                 break
 
             if frame_num % sample_every == 0:

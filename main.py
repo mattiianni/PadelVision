@@ -57,6 +57,14 @@ def main():
         metavar="N",
         help="Numero massimo di giocatori da tenere (default: 4)",
     )
+    parser.add_argument(
+        "--clip",
+        type=float,
+        default=1.0,
+        metavar="F",
+        help="Analizza solo una frazione del video: 0.1 = primo 10%%, "
+             "0.5 = prima metà. Default: 1.0 (tutto)",
+    )
 
     args = parser.parse_args()
 
@@ -73,6 +81,7 @@ def main():
         sample_every=args.sample,
         min_player_frames=args.min_frames,
         max_players=args.max_players,
+        clip=args.clip,
     )
 
     try:

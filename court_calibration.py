@@ -20,6 +20,11 @@ import cv2
 import numpy as np
 import json
 import os
+from PIL import Image, ImageDraw, ImageFont
+
+# Arial Bold su macOS
+_FONT_BOLD_PATH = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+_FONT_REG_PATH  = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
 COURT_WIDTH_M  = 10.0
 COURT_LENGTH_M = 20.0
@@ -96,42 +101,64 @@ class CourtCalibrator:
 
     def _interactive_click(self, frame: np.ndarray):
         h, w = frame.shape[:2]
-        base = max(w, h) / 1080.0
-        fs   = round(0.72 * base, 2)
-        fs_s = round(0.54 * base, 2)
+        base     = max(w, h) / 1080.0
+        hud_h    = max(80, int(90 * base))   # altezza barra HUD in cima
+        font_big = max(22, int(26 * base))   # px font Arial Bold (istruzione)
+        font_sm  = max(16, int(18 * base))   # px font Arial (hint tasti)
+        dot_r    = max(10, int(12 * base))   # raggio cerchietti
 
-        src_pts = []   # pixel cliccati
-        dst_pts = []   # coordinate reali corrispondenti
-        current = [0]  # indice punto corrente
+        src_pts = []
+        dst_pts = []
+        current = [0]
+        img     = [frame.copy()]
 
-        img = [frame.copy()]
+        def draw_text_pil(canvas_bgr, text, xy, size, color_rgb, bold=True):
+            """Disegna testo Arial Bold via Pillow → restituisce canvas aggiornato."""
+            pil = Image.fromarray(cv2.cvtColor(canvas_bgr, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(pil)
+            path = _FONT_BOLD_PATH if bold else _FONT_REG_PATH
+            try:
+                fnt = ImageFont.truetype(path, size)
+            except Exception:
+                fnt = ImageFont.load_default()
+            draw.text(xy, text, font=fnt, fill=color_rgb)
+            return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
         def refresh():
             canvas = img[0].copy()
             ci = current[0]
 
-            # --- Istruzione principale ---
+            # --- HUD bar fissa in cima (sfondo scuro a piena larghezza) ---
+            cv2.rectangle(canvas, (0, 0), (w, hud_h), (20, 20, 20), -1)
+            cv2.rectangle(canvas, (0, hud_h - 2), (w, hud_h), (50, 50, 50), -1)
+
             if ci < len(CALIB_POINTS):
                 label, _ = CALIB_POINTS[ci]
-                required = "(obbligatorio)" if ci < 4 else "(opzionale — premi INVIO per saltare)"
-                self._txt(canvas, f"Punto {ci+1}: {label}  {required}",
-                          (16, 44), fs, COLORS[ci % len(COLORS)])
+                opt_tag  = "" if ci < 4 else "  [opzionale]"
+                col_rgb  = tuple(reversed(COLORS[ci % len(COLORS)]))  # BGR→RGB
+                main_txt = f"Punto {ci + 1}:  {label}{opt_tag}"
             else:
-                self._txt(canvas, "Tutti i punti cliccati!",
-                          (16, 44), fs, (0, 255, 120))
+                col_rgb  = (80, 255, 120)
+                main_txt = "Tutti i punti cliccati — premi INVIO per confermare"
 
-            self._txt(canvas,
-                      "INVIO = conferma/prossimo   Z = annulla ultimo   ESC = esci",
-                      (16, 44 + int(48 * base)), fs_s, (170, 170, 170))
+            canvas = draw_text_pil(canvas, main_txt,
+                                   (16, max(4, hud_h // 2 - font_big - 2)),
+                                   font_big, col_rgb)
+            canvas = draw_text_pil(canvas,
+                                   "INVIO = conferma    Z = annulla ultimo    ESC = esci",
+                                   (16, hud_h // 2 + 4),
+                                   font_sm, (180, 180, 180), bold=False)
 
-            # --- Punti già cliccati ---
+            # --- Punti già cliccati sul frame ---
             for i, (px, py) in enumerate(src_pts):
-                r = max(8, int(10 * base))
-                cv2.circle(canvas, (int(px), int(py)), r, COLORS[i], -1)
-                cv2.circle(canvas, (int(px), int(py)), r + 3, (255, 255, 255), 2)
-                lbl = CALIB_POINTS[i][0].split(" [")[0]   # rimuovi "[opt]"
-                self._txt(canvas, lbl,
-                          (int(px) + r + 5, int(py) + 5), fs_s, COLORS[i], 1)
+                cv2.circle(canvas, (int(px), int(py)), dot_r, COLORS[i], -1)
+                cv2.circle(canvas, (int(px), int(py)), dot_r + 3, (255, 255, 255), 2)
+                lbl = CALIB_POINTS[i][0].replace(" [opt]", "")
+                canvas = draw_text_pil(
+                    canvas, lbl,
+                    (int(px) + dot_r + 6, int(py) - font_sm // 2),
+                    font_sm, tuple(reversed(COLORS[i])), bold=True
+                )
 
             # --- Mini schema campo ---
             self._draw_mini_court(canvas, src_pts, dst_pts, ci)
@@ -178,6 +205,7 @@ class CourtCalibrator:
                 raise RuntimeError("Calibrazione annullata.")
 
         cv2.destroyAllWindows()
+        cv2.waitKey(1)   # flush eventi macOS → finestra si chiude davvero
 
         # Calcola omografia
         src = np.float32(src_pts)
@@ -237,20 +265,7 @@ class CourtCalibrator:
         cap.release()
         raise ValueError(f"Impossibile leggere il video: {self.video_path}")
 
-    # ------------------------------------------------------------------
-    # Testo con sfondo
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _txt(img, text, pos, fs, color, thick=2):
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        (tw, th), bl = cv2.getTextSize(text, font, fs, thick)
-        x, y = pos
-        pad = 5
-        ov = img.copy()
-        cv2.rectangle(ov, (x-pad, y-th-pad), (x+tw+pad, y+bl+pad), (0, 0, 0), -1)
-        cv2.addWeighted(ov, 0.55, img, 0.45, 0, img)
-        cv2.putText(img, text, (x, y), font, fs, color, thick, cv2.LINE_AA)
+    # _txt rimosso — rimpiazzato da draw_text_pil con Arial Bold
 
     # ------------------------------------------------------------------
     # Trasformazione

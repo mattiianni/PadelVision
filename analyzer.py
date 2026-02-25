@@ -21,6 +21,7 @@ class PadelAnalyzer:
         sample_every: int = 2,
         min_player_frames: int = 50,
         max_players: int = 4,
+        clip: float = 1.0,
     ):
         """
         video_path       : path al video da analizzare
@@ -34,6 +35,7 @@ class PadelAnalyzer:
         self.sample_every = sample_every
         self.min_player_frames = min_player_frames
         self.max_players = max_players
+        self.clip = max(0.01, min(1.0, clip))
 
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         self.calib_path = os.path.join(output_dir, f"calibration_{video_name}.json")
@@ -61,6 +63,7 @@ class PadelAnalyzer:
             self.video_path,
             calibrator,
             sample_every=self.sample_every,
+            clip=self.clip,
             progress_callback=self._progress,
         )
         elapsed = time.time() - t0
