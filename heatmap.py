@@ -328,45 +328,49 @@ def _plot_zone_chart(stats: dict, output_dir: str) -> str:
 # -----------------------------------------------------------------------
 
 def generate_heatmaps(tracks: dict, output_dir: str = "output",
-                       fps: float = 30.0) -> tuple[list[str], dict]:
+                       fps: float = 30.0) -> tuple[dict, dict]:
     """
     Genera tutti i grafici e le statistiche.
+    Padel: sempre 4 giocatori, 2 squadre.
 
     Ritorna:
-      images  - lista di path alle immagini prodotte
-      stats   - dict con statistiche per giocatore
+      images — dict {"players": path, "teams": path, "zones": path}
+      stats  — dict con statistiche per giocatore
     """
     os.makedirs(output_dir, exist_ok=True)
 
     if not tracks:
         raise ValueError("Nessun giocatore tracciato. Controlla il video o la calibrazione.")
 
-    # Ordina per presenza (più frame = più affidabile)
+    # Sempre 4 giocatori ordinati per presenza (più frame = più affidabile)
     sorted_tracks = dict(
-        sorted(tracks.items(), key=lambda x: len(x[1]), reverse=True)
+        sorted(tracks.items(), key=lambda x: len(x[1]), reverse=True)[:4]
     )
 
-    team_a, team_b = _assign_teams(sorted_tracks)
-    stats = compute_zone_stats(sorted_tracks, fps)
+    # Squadra A = i 2 con avg_y più basso, Squadra B = i 2 con avg_y più alto
+    by_y = sorted(sorted_tracks.keys(),
+                  key=lambda pid: np.mean([p[1] for p in sorted_tracks[pid]]) if sorted_tracks[pid] else 10)
+    team_a = by_y[:2]
+    team_b = by_y[2:]
 
-    images = []
+    stats = compute_zone_stats(sorted_tracks, fps)
+    images = {}
 
     p = _plot_individual_heatmaps(sorted_tracks, team_a, team_b, fps, output_dir)
     if p:
-        images.append(p)
+        images["players"] = p
 
     p = _plot_team_heatmaps(sorted_tracks, team_a, team_b, fps, output_dir)
     if p:
-        images.append(p)
+        images["teams"] = p
 
     p = _plot_zone_chart(stats, output_dir)
     if p:
-        images.append(p)
+        images["zones"] = p
 
     # Salva stats JSON
     stats_path = os.path.join(output_dir, "stats.json")
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
-    images.append(stats_path)
 
     return images, stats

@@ -10,6 +10,7 @@ import time
 from court_calibration import CourtCalibrator
 from player_tracker import PlayerTracker
 from heatmap import generate_heatmaps
+from report import generate_report
 
 
 class PadelAnalyzer:
@@ -78,8 +79,22 @@ class PadelAnalyzer:
         images, stats = generate_heatmaps(tracks, self.output_dir, fps)
         self._ok()
 
-        # ---- Riepilogo ----
-        self._summary(stats, images)
+        # ---- Report HTML ----
+        video_name = os.path.splitext(os.path.basename(self.video_path))[0]
+        report_path = generate_report(
+            images={
+                "players": images.get("players"),
+                "teams":   images.get("teams"),
+                "zones":   images.get("zones"),
+            },
+            stats=stats,
+            video_name=video_name,
+            output_dir=self.output_dir,
+        )
+        self._ok(f"Report aperto nel browser → {report_path}")
+
+        # ---- Riepilogo terminale ----
+        self._summary(stats, list(images.values()) + [report_path])
 
         return stats, images
 
