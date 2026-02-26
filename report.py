@@ -16,29 +16,54 @@ def _img_b64(path: str) -> str:
 
 
 def generate_report(
-    images: dict,    # {"players": path, "teams": path, "zones": path}
-    stats: dict,     # {player_id: {...}}
+    images: dict,           # {"players": path, "teams": path, "zones": path}
+    stats: dict,            # {player_id: {...}}
     video_name: str,
     output_dir: str,
+    player_names: dict = None,   # {player_id: "Nome Cognome"}
+    crop_paths: dict = None,     # {player_id: path_png}
+    open_browser: bool = True,   # False per uso dalla web UI
 ) -> str:
-    """Genera report HTML e lo apre nel browser. Ritorna il path del file."""
+    """Genera report HTML. Se open_browser=True lo apre automaticamente. Ritorna il path."""
 
     # --- Immagini base64 ---
     img_players = _img_b64(images["players"]) if images.get("players") else None
     img_teams   = _img_b64(images["teams"])   if images.get("teams")   else None
     img_zones   = _img_b64(images["zones"])   if images.get("zones")   else None
 
-    # --- Tabella statistiche ---
-    team_label = {pid: ("A" if i < 2 else "B") for i, pid in enumerate(sorted(stats.keys()))}
+    # --- Normalizzazione parametri opzionali ---
+    player_names = player_names or {}
+    crop_paths   = crop_paths   or {}
+
+    # --- Tabella statistiche: Team A prima, Team B dopo ---
+    # Ordina: prima i giocatori Team A, poi Team B; dentro ogni squadra per player_id
+    def _team_sort_key(pid):
+        t = stats[pid].get("team", "B")
+        return (0 if t == "A" else 1, pid)
 
     rows = ""
-    for pid in sorted(stats.keys()):
+    for pid in sorted(stats.keys(), key=_team_sort_key):
         s = stats[pid]
-        team = team_label.get(pid, "?")
+        team = stats[pid].get("team", "?")
         badge_color = "#3b82f6" if team == "A" else "#ef4444"
+        player_label = player_names.get(pid, f"Player {pid}")
+
+        # Thumbnail crop inline (base64)
+        crop_html = ""
+        crop_p = crop_paths.get(pid)
+        if crop_p and os.path.exists(crop_p):
+            crop_b64 = _img_b64(crop_p)
+            crop_html = (
+                f'<img src="data:image/png;base64,{crop_b64}" '
+                f'style="height:56px;width:auto;border-radius:6px;'
+                f'object-fit:cover;vertical-align:middle;margin-right:10px;">'
+            )
+
         rows += f"""
         <tr>
-          <td><span class="badge" style="background:{badge_color}">Team {team}</span> Giocatore {pid}</td>
+          <td style="white-space:nowrap">
+            {crop_html}<span class="badge" style="background:{badge_color}">Team {team}</span> {player_label}
+          </td>
           <td>{s['time_s']}s</td>
           <td>
             <div class="bar-wrap">
@@ -263,7 +288,7 @@ def generate_report(
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(html)
 
-    # Apri nel browser di default (macOS)
-    subprocess.Popen(["open", report_path])
+    if open_browser:
+        subprocess.Popen(["open", report_path])
 
     return report_path

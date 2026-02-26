@@ -30,10 +30,14 @@ PPM = 50
 GRID_W = int(COURT_W * PPM)
 GRID_H = int(COURT_L * PPM)
 
-# Zone (distanza dalla rete verso il fondo)
-ZONE_NET  = (0.0, 3.0)   # 0-3 m dalla rete
-ZONE_MID  = (3.0, 7.0)   # 3-7 m
-ZONE_BACK = (7.0, 10.0)  # 7-10 m (vetro di fondo)
+# Linea di servizio: 6.95 m dalla rete (regolamento FIP ufficiale)
+# La linea divide ogni metà campo in: zona vicina rete (6.95m) + zona fondo (3.05m)
+SERVICE_LINE_FROM_NET = 6.95
+
+# Zone (distanza dalla rete verso il fondo, per ogni metà campo)
+ZONE_NET  = (0.0, 3.0)              # 0-3 m dalla rete  (zona d'attacco)
+ZONE_MID  = (3.0, SERVICE_LINE_FROM_NET)   # 3-6.95 m (fino alla linea di servizio)
+ZONE_BACK = (SERVICE_LINE_FROM_NET, 10.0)  # 6.95-10 m (vetro di fondo)
 
 PLAYER_CMAPS = [
     ["#000000", "#ff2222", "#ffff00"],   # rosso → giallo
@@ -54,7 +58,7 @@ def _draw_court(ax, alpha: float = 1.0):
     ax.set_xlim(0, COURT_W)
     ax.set_ylim(0, COURT_L)
     ax.set_aspect("equal")
-    ax.set_facecolor("#1a4a1a")
+    ax.set_facecolor("#0a2a50")   # blu campo padel
 
     kw = dict(color="white", linewidth=1.5, alpha=alpha, solid_capstyle="round")
 
@@ -70,12 +74,14 @@ def _draw_court(ax, alpha: float = 1.0):
     # Rete
     ax.plot([0, COURT_W], [net_y, net_y], color="white", linewidth=3, alpha=alpha)
 
-    # Linee di servizio (3 m dalla rete su entrambi i lati)
-    ax.plot([0, COURT_W], [net_y - 3, net_y - 3], **kw)
-    ax.plot([0, COURT_W], [net_y + 3, net_y + 3], **kw)
+    # Linee di servizio: 6.95 m dalla rete (regolamento FIP)
+    # Lasciano ~3.05 m fino al vetro di fondo
+    sd = SERVICE_LINE_FROM_NET
+    ax.plot([0, COURT_W], [net_y - sd, net_y - sd], **kw)
+    ax.plot([0, COURT_W], [net_y + sd, net_y + sd], **kw)
 
-    # Linea centrale zona servizio
-    ax.plot([COURT_W / 2, COURT_W / 2], [net_y - 3, net_y + 3], **kw)
+    # Linea centrale zona servizio (dalla linea servizio a quella opposta)
+    ax.plot([COURT_W / 2, COURT_W / 2], [net_y - sd, net_y + sd], **kw)
 
     # Label squadre
     for y_pos, label in [(COURT_L * 0.25, "TEAM A"), (COURT_L * 0.75, "TEAM B")]:
@@ -149,16 +155,15 @@ def compute_zone_stats(tracks: dict, fps: float) -> dict:
         xs = np.array([p[0] for p in positions])
         ys_raw = np.array([p[1] for p in positions])
 
-        # Normalizza y rispetto alla propria metà (0 = rete, 10 = fondo)
-        avg_y = float(np.mean(ys_raw))
-        if avg_y < COURT_L / 2:
-            ys = ys_raw                        # team A: y già da 0 a 10
-        else:
-            ys = COURT_L - ys_raw              # team B: inverti
+        # Distanza dalla rete: sempre abs(y - 10), uguale per entrambi i team
+        # Team A (y 10→20, camera): dist = y - 10
+        # Team B (y 0→10, lontano):  dist = 10 - y
+        # → formula unica: abs(y - net)
+        ys = np.abs(ys_raw - (COURT_L / 2))
 
-        net_pct  = float(np.sum(ys < ZONE_NET[1])  / total * 100)
-        mid_pct  = float(np.sum((ys >= ZONE_MID[0]) & (ys < ZONE_MID[1]))  / total * 100)
-        back_pct = float(np.sum(ys >= ZONE_BACK[0]) / total * 100)
+        net_pct  = float(np.sum(ys < ZONE_NET[1])                           / total * 100)
+        mid_pct  = float(np.sum((ys >= ZONE_MID[0]) & (ys < ZONE_MID[1])) / total * 100)
+        back_pct = float(np.sum(ys >= ZONE_BACK[0])                        / total * 100)
 
         left_pct  = float(np.sum(xs < COURT_W / 2)  / total * 100)
         right_pct = float(np.sum(xs >= COURT_W / 2) / total * 100)
@@ -182,7 +187,8 @@ def compute_zone_stats(tracks: dict, fps: float) -> dict:
 # -----------------------------------------------------------------------
 
 def _plot_individual_heatmaps(tracks: dict, team_a: list, team_b: list,
-                               fps: float, output_dir: str) -> str:
+                               fps: float, output_dir: str,
+                               player_names: dict = None) -> str:
     players = list(tracks.items())[:4]
     n = len(players)
     if n == 0:
@@ -209,8 +215,9 @@ def _plot_individual_heatmaps(tracks: dict, team_a: list, team_b: list,
         team = "A" if pid in team_a else "B"
         color = PLAYER_COLORS_SOLID[i % len(PLAYER_COLORS_SOLID)]
         time_s = len(pos_list) / fps
+        pname = (player_names or {}).get(pid, f"Player {pid}")
         ax.set_title(
-            f"Player {pid}  ·  Team {team}\n{len(pos_list)} frame  ·  {time_s:.0f}s",
+            f"{pname}  ·  Team {team}\n{len(pos_list)} frame  ·  {time_s:.0f}s",
             color=color, fontsize=11, fontweight="bold", pad=10,
         )
         ax.set_xlabel("Larghezza (m)", color="#aaa", fontsize=8)
@@ -233,7 +240,8 @@ def _plot_individual_heatmaps(tracks: dict, team_a: list, team_b: list,
 # -----------------------------------------------------------------------
 
 def _plot_team_heatmaps(tracks: dict, team_a: list, team_b: list,
-                         fps: float, output_dir: str) -> str:
+                         fps: float, output_dir: str,
+                         player_names: dict = None) -> str:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 10))
     fig.patch.set_facecolor("#0d1117")
 
@@ -248,7 +256,8 @@ def _plot_team_heatmaps(tracks: dict, team_a: list, team_b: list,
             ax.imshow(grid, extent=[0, COURT_W, 0, COURT_L], origin="lower",
                       cmap=team_cmap, alpha=0.85, aspect="auto",
                       interpolation="bilinear", vmin=0, vmax=1)
-        ax.set_title(f"{name}  (giocatori: {ids})", color="white",
+        pnames = [str((player_names or {}).get(pid, f"P{pid}")) for pid in ids]
+        ax.set_title(f"{name}  ({' · '.join(pnames)})", color="white",
                      fontsize=12, fontweight="bold")
         ax.set_xlabel("Larghezza (m)", color="#aaa", fontsize=9)
         ax.set_ylabel("Lunghezza (m)", color="#aaa", fontsize=9)
@@ -267,7 +276,7 @@ def _plot_team_heatmaps(tracks: dict, team_a: list, team_b: list,
 # Plot: grafico zone per giocatore
 # -----------------------------------------------------------------------
 
-def _plot_zone_chart(stats: dict, output_dir: str) -> str:
+def _plot_zone_chart(stats: dict, output_dir: str, player_names: dict = None) -> str:
     pids = list(stats.keys())
     if not pids:
         return None
@@ -283,9 +292,9 @@ def _plot_zone_chart(stats: dict, output_dir: str) -> str:
     fig.patch.set_facecolor("#0d1117")
     ax.set_facecolor("#161b22")
 
-    b1 = ax.bar(x - width, net_vals,  width, label="Zona Rete (0-3m)",  color="#00aaff", alpha=0.85)
-    b2 = ax.bar(x,          mid_vals,  width, label="Zona Medio (3-7m)", color="#ffaa00", alpha=0.85)
-    b3 = ax.bar(x + width,  back_vals, width, label="Fondo (7-10m)",     color="#ff4444", alpha=0.85)
+    b1 = ax.bar(x - width, net_vals,  width, label="Zona Rete (0-3m)",      color="#00aaff", alpha=0.85)
+    b2 = ax.bar(x,          mid_vals,  width, label="Zona Medio (3-6.95m)", color="#ffaa00", alpha=0.85)
+    b3 = ax.bar(x + width,  back_vals, width, label="Fondo (>6.95m)",       color="#ff4444", alpha=0.85)
 
     def _label_bars(bars):
         for bar in bars:
@@ -302,7 +311,8 @@ def _plot_zone_chart(stats: dict, output_dir: str) -> str:
     _label_bars(b3)
 
     ax.set_xticks(x)
-    ax.set_xticklabels([f"Player {p}" for p in pids], color="white", fontsize=10)
+    xlabels = [(player_names or {}).get(p, f"Player {p}") for p in pids]
+    ax.set_xticklabels(xlabels, color="white", fontsize=10)
     ax.set_yticks(range(0, 101, 10))
     ax.set_yticklabels([f"{v}%" for v in range(0, 101, 10)], color="#aaa", fontsize=8)
     ax.set_ylabel("% tempo", color="#aaa")
@@ -328,7 +338,8 @@ def _plot_zone_chart(stats: dict, output_dir: str) -> str:
 # -----------------------------------------------------------------------
 
 def generate_heatmaps(tracks: dict, output_dir: str = "output",
-                       fps: float = 30.0) -> tuple[dict, dict]:
+                       fps: float = 30.0,
+                       player_names: dict = None) -> tuple[dict, dict]:
     """
     Genera tutti i grafici e le statistiche.
     Padel: sempre 4 giocatori, 2 squadre.
@@ -347,24 +358,36 @@ def generate_heatmaps(tracks: dict, output_dir: str = "output",
         sorted(tracks.items(), key=lambda x: len(x[1]), reverse=True)[:4]
     )
 
-    # Squadra A = i 2 con avg_y più basso, Squadra B = i 2 con avg_y più alto
+    # Team A = i 2 con avg_y più ALTO (lato vicino alla camera, y=10→20)
+    # Team B = i 2 con avg_y più BASSO (lato lontano dalla camera, y=0→10)
     by_y = sorted(sorted_tracks.keys(),
                   key=lambda pid: np.mean([p[1] for p in sorted_tracks[pid]]) if sorted_tracks[pid] else 10)
-    team_a = by_y[:2]
-    team_b = by_y[2:]
+    team_b = by_y[:2]   # avg_y basso = lontano camera
+    team_a = by_y[2:]   # avg_y alto  = vicino camera
 
     stats = compute_zone_stats(sorted_tracks, fps)
+
+    # Aggiunge campo "team" nelle stats per uso in report e summary
+    for pid in team_a:
+        if pid in stats:
+            stats[pid]["team"] = "A"
+    for pid in team_b:
+        if pid in stats:
+            stats[pid]["team"] = "B"
+
     images = {}
 
-    p = _plot_individual_heatmaps(sorted_tracks, team_a, team_b, fps, output_dir)
+    p = _plot_individual_heatmaps(sorted_tracks, team_a, team_b, fps, output_dir,
+                                   player_names=player_names)
     if p:
         images["players"] = p
 
-    p = _plot_team_heatmaps(sorted_tracks, team_a, team_b, fps, output_dir)
+    p = _plot_team_heatmaps(sorted_tracks, team_a, team_b, fps, output_dir,
+                             player_names=player_names)
     if p:
         images["teams"] = p
 
-    p = _plot_zone_chart(stats, output_dir)
+    p = _plot_zone_chart(stats, output_dir, player_names=player_names)
     if p:
         images["zones"] = p
 

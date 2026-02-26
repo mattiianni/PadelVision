@@ -9,6 +9,7 @@ import time
 
 from court_calibration import CourtCalibrator
 from player_tracker import PlayerTracker
+from player_namer import name_players
 from heatmap import generate_heatmaps
 from report import generate_report
 
@@ -77,9 +78,24 @@ class PadelAnalyzer:
         )
         self._ok(f"{len(tracks)} giocatori  ·  {total_frames} frame  ·  {elapsed:.0f}s")
 
+        # ---- Crop + Naming giocatori ----
+        self._step(3, "Estrazione crop giocatori")
+        print("  Cerco i migliori frame per ogni giocatore...")
+        crop_paths = tracker.extract_player_crops(
+            self.video_path, tracks, calibrator, self.output_dir
+        )
+        self._ok(f"{len(crop_paths)} crop salvati")
+
+        player_ids = sorted(tracks.keys())
+        player_names = name_players(crop_paths, player_ids)
+        print()
+        for pid, name in player_names.items():
+            print(f"  Player {pid} → {name}")
+
         # ---- Heatmap ----
-        self._step(3, "Generazione heatmap e statistiche")
-        images, stats = generate_heatmaps(tracks, self.output_dir, fps)
+        self._step(4, "Generazione heatmap e statistiche")
+        images, stats = generate_heatmaps(tracks, self.output_dir, fps,
+                                           player_names=player_names)
         self._ok()
 
         # ---- Report HTML ----
@@ -93,11 +109,13 @@ class PadelAnalyzer:
             stats=stats,
             video_name=video_name,
             output_dir=self.output_dir,
+            player_names=player_names,
+            crop_paths=crop_paths,
         )
         self._ok(f"Report aperto nel browser → {report_path}")
 
         # ---- Riepilogo terminale ----
-        self._summary(stats, list(images.values()) + [report_path])
+        self._summary(stats, player_names, list(images.values()) + [report_path])
 
         return stats, images
 
@@ -122,7 +140,7 @@ class PadelAnalyzer:
 
     @staticmethod
     def _step(n: int, label: str):
-        print(f"\n[{n}/3] {label}...")
+        print(f"\n[{n}/4] {label}...")
 
     @staticmethod
     def _ok(detail: str = ""):
@@ -131,13 +149,19 @@ class PadelAnalyzer:
             msg += f"  ({detail})"
         print(msg)
 
-    def _summary(self, stats: dict, images: list[str]):
+    def _summary(self, stats: dict, player_names: dict, images: list[str]):
         print()
         print("─" * 54)
-        print("  RISULTATI")
+        print("  RISULTATI  (Team A = vicino camera · Team B = lontano)")
         print("─" * 54)
-        for pid, s in stats.items():
-            print(f"\n  Player {pid}  ·  {s['time_s']}s a schermo")
+        # Team A prima, Team B dopo; dentro ogni squadra per player_id
+        ordered = sorted(stats.keys(),
+                         key=lambda pid: (0 if stats[pid].get("team") == "A" else 1, pid))
+        for pid in ordered:
+            s = stats[pid]
+            name = player_names.get(pid, f"Player {pid}")
+            team = s.get("team", "?")
+            print(f"\n  {name}  (Player {pid} · Team {team})  ·  {s['time_s']}s a schermo")
             print(f"    Zona rete : {s['zone_net_pct']:5.1f}%")
             print(f"    Zona medio: {s['zone_mid_pct']:5.1f}%")
             print(f"    Zona fondo: {s['zone_back_pct']:5.1f}%")

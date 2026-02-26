@@ -305,3 +305,34 @@ class CourtCalibrator:
     def _load(self):
         with open(self.calibration_path, "r") as f:
             self.H = np.array(json.load(f)["H"], dtype=np.float64)
+
+    # ------------------------------------------------------------------
+    # Factory methods — modalità headless (senza video / UI OpenCV)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_homography(cls, H):
+        """Crea un CourtCalibrator da una matrice di omografia già calcolata."""
+        obj = cls.__new__(cls)
+        obj.video_path = None
+        obj.calibration_path = None
+        obj.H = H if isinstance(H, np.ndarray) else np.array(H, dtype=np.float64)
+        return obj
+
+    @classmethod
+    def from_click_points(cls, src_pts: list, dst_pts: list):
+        """
+        Crea un CourtCalibrator da coppie di punti (modalità web/headless).
+
+        src_pts : [(px, py), ...] — pixel nel frame video
+        dst_pts : [(mx, my), ...] — coordinate reali in metri sul campo
+        """
+        obj = cls.__new__(cls)
+        obj.video_path = None
+        obj.calibration_path = None
+        src = np.float32(src_pts)
+        dst = np.float32(dst_pts)
+        obj.H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 3.0)
+        if obj.H is None:
+            raise ValueError("Omografia non calcolabile: controlla i punti di calibrazione.")
+        return obj
