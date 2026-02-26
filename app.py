@@ -188,7 +188,7 @@ def stats_to_html(stats: dict, player_names: dict) -> str:
 def on_video_upload(path: str):
     """Carica video: estrae frame iniziale, aggiorna slider e info."""
     if not path:
-        empty_sliders = [gr.update()] * (2 + MAX_SEG_ROWS * 2)
+        empty_sliders = [gr.update()] * (MAX_SEG_ROWS * 2)
         return (
             "", 3600.0,
             gr.update(),                            # video_info
@@ -217,9 +217,7 @@ def on_video_upload(path: str):
     frame_default = dur / 3
     initial_frame = extract_calib_frame(path, frame_default)
 
-    # Slider analisi (Tab 2)
-    g_in  = gr.update(maximum=dur, value=0)
-    g_out = gr.update(maximum=dur, value=dur)
+    # Slider segmenti (Tab 2)
     s_ins  = [gr.update(maximum=dur, value=0)   for _ in range(MAX_SEG_ROWS)]
     s_outs = [gr.update(maximum=dur, value=dur) for _ in range(MAX_SEG_ROWS)]
 
@@ -231,7 +229,6 @@ def on_video_upload(path: str):
         gr.update(visible=False),                                            # calib_image (Tab 1)
         gr.update(value=initial_frame, visible=True),                        # frame_preview_2 (Tab 2)
         gr.update(maximum=dur, value=frame_default, step=1, visible=True),   # scrub_sl_2 (Tab 2)
-        g_in, g_out,
         *s_ins, *s_outs,
     )
 
@@ -322,7 +319,7 @@ def reset_seg_rows():
 
 
 def run_tracking(
-    state_video, global_in, global_out,
+    state_video,
     si0, si1, si2, si3,
     so0, so1, so2, so3,
     st0, st1, st2, st3,
@@ -338,23 +335,19 @@ def run_tracking(
     tracker    = PlayerTracker()
 
     fps_v, total_frames, total_dur = video_duration(state_video)
-    g_in  = float(global_in  or 0)
-    g_out = float(global_out or total_dur)
 
-    # Costruisce intervalli
+    # Costruisce intervalli dai segmenti aggiunti con +
     raw = list(zip([si0,si1,si2,si3], [so0,so1,so2,so3], [st0,st1,st2,st3]))
     intervals = []
-    if n_seg_rows == 0:
-        intervals = [(g_in, g_out, "Analisi")]
-    else:
-        for i in range(int(n_seg_rows)):
-            t_in  = float(raw[i][0] or 0)
-            t_out = float(raw[i][1] or total_dur)
-            stype = raw[i][2] or SEG_TYPES[0]
-            if t_out > t_in:
-                intervals.append((max(t_in, g_in), min(t_out, g_out), stype))
-        if not intervals:
-            intervals = [(g_in, g_out, "Analisi")]
+    for i in range(int(n_seg_rows)):
+        t_in  = float(raw[i][0] or 0)
+        t_out = float(raw[i][1] or total_dur)
+        stype = raw[i][2] or SEG_TYPES[0]
+        if t_out > t_in:
+            intervals.append((t_in, t_out, stype))
+    # Fallback: nessun segmento → video intero
+    if not intervals:
+        intervals = [(0.0, total_dur, "Analisi completa")]
 
     n_segs = len(intervals)
     all_seg_tracks     = []
@@ -641,26 +634,12 @@ with gr.Blocks(title="PadelVision") as app:
 
             gr.HTML('<div style="border-top:1px solid #30363d;margin:16px 0"></div>')
             gr.HTML(
-                '<p style="color:#8b949e;font-size:.82rem;margin-bottom:8px">'
-                'Imposta INIZIO e FINE dell\'analisi. '
-                'Aggiungi segmenti se ci sono più set o cambi campo.</p>'
-            )
-            with gr.Row():
-                global_in_sl  = gr.Slider(0, 3600, value=0,    step=1,
-                                           label="▶  INIZIO analisi (secondi)")
-                global_out_sl = gr.Slider(0, 3600, value=3600, step=1,
-                                           label="FINE analisi (secondi)  ◀")
-            global_time_lbl = gr.HTML(time_label_html(0, 3600))
-
-            gr.HTML('<div style="border-top:1px solid #30363d;margin:16px 0"></div>')
-
-            # Segmenti
-            gr.HTML(
                 '<div style="color:#e6edf3;font-weight:700;font-size:.9rem;'
-                'margin-bottom:6px">Segmenti (opzionale)</div>'
+                'margin-bottom:6px">Range di analisi</div>'
                 '<p style="color:#8b949e;font-size:.81rem;margin-bottom:10px">'
-                'Usa + per aggiungere un range. Ogni segmento viene analizzato '
-                'separatamente; i giocatori con lo stesso nome vengono uniti.</p>'
+                'Premi <b>+</b> per aggiungere un range. '
+                'Ogni range ha IN, OUT e tipo. '
+                'I giocatori con lo stesso nome in range diversi vengono uniti.</p>'
             )
 
             seg_groups    = []
@@ -760,7 +739,6 @@ with gr.Blocks(title="PadelVision") as app:
             state_video, state_video_dur, video_info,
             frame_preview, frame_sl, btn_load, calib_image,
             frame_preview_2, scrub_sl_2,
-            global_in_sl, global_out_sl,
             *seg_in_sls, *seg_out_sls,
         ],
     )
@@ -811,14 +789,6 @@ with gr.Blocks(title="PadelVision") as app:
         outputs=[state_H, calib_status],
     )
 
-    # Tab 2 — slider globali → label tempo
-    gr.on(
-        triggers=[global_in_sl.change, global_out_sl.change],
-        fn=time_label_html,
-        inputs=[global_in_sl, global_out_sl],
-        outputs=[global_time_lbl],
-    )
-
     # Tab 2 — slider segmenti → label tempo
     for i in range(MAX_SEG_ROWS):
         gr.on(
@@ -844,7 +814,7 @@ with gr.Blocks(title="PadelVision") as app:
     btn_track.click(
         fn=run_tracking,
         inputs=[
-            state_video, global_in_sl, global_out_sl,
+            state_video,
             seg_in_sls[0], seg_in_sls[1], seg_in_sls[2], seg_in_sls[3],
             seg_out_sls[0], seg_out_sls[1], seg_out_sls[2], seg_out_sls[3],
             seg_type_dds[0], seg_type_dds[1], seg_type_dds[2], seg_type_dds[3],
