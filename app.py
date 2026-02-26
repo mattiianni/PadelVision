@@ -490,8 +490,7 @@ def generate_results(tracking_state,
 
 CSS = "footer { display: none !important; }"
 
-with gr.Blocks(title="PadelVision", css=CSS,
-               theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate")) as app:
+with gr.Blocks(title="PadelVision") as app:
 
     state_video    = gr.State("")
     state_video_dur = gr.State(3600.0)
@@ -563,7 +562,6 @@ with gr.Blocks(title="PadelVision", css=CSS,
                         label="Anteprima — guarda il video per trovare i punti di calibrazione",
                         interactive=False,
                         height=440,
-                        show_download_button=False,
                         visible=True,
                     )
                     # Frame calibrazione (nascosto, appare dopo Estrai Frame)
@@ -809,4 +807,6 @@ if __name__ == "__main__":
         allowed_paths=[OUTPUT_DIR],
         show_error=True,
         inbrowser=True,
+        css=CSS,
+        theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate"),
     )
