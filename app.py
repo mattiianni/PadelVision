@@ -69,18 +69,17 @@ def video_duration(path: str):
     return fps, total, total / fps
 
 
-def extract_calib_frame(video_path: str, in_s: float = 0.0):
-    cap   = cv2.VideoCapture(video_path)
-    fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
+def extract_calib_frame(video_path: str, at_s: float):
+    """Estrae il frame esatto al secondo `at_s`."""
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    for t in [int((in_s + 5) * fps), int(60 * fps), int(total * 0.10), int(total * 0.02), 0]:
-        t = max(0, min(t, total - 1))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, t)
-        ret, f = cap.read()
-        if ret and np.mean(f) > 20:
-            cap.release()
-            return cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+    frame_n = max(0, min(int(at_s * fps), total - 1))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_n)
+    ret, f = cap.read()
     cap.release()
+    if ret:
+        return cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
     return None
 
 
@@ -104,7 +103,7 @@ def draw_calib_overlay(frame_rgb: np.ndarray, pts: list) -> np.ndarray:
                     (255, 255, 255), 2, cv2.LINE_AA)
     elif n >= 4:
         cv2.circle(canvas, (22, 33), 11, (50, 220, 90), -1)
-        cv2.putText(canvas, f"✓ {n} punti — premi Conferma Calibrazione",
+        cv2.putText(canvas, f"OK  {n} punti — premi Conferma Calibrazione",
                     (44, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.88,
                     (255, 255, 255), 2, cv2.LINE_AA)
 
@@ -187,45 +186,70 @@ def stats_to_html(stats: dict, player_names: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def on_video_upload(path: str):
-    """Carica video: aggiorna player, info durata, max di tutti gli slider."""
+    """Carica video: aggiorna player, info durata, slider frame calibrazione e analisi."""
     if not path:
-        empty = [gr.update()] * (2 + MAX_SEG_ROWS * 2)
-        return "", 3600.0, gr.update(), gr.update(), *empty
+        empty_sliders = [gr.update()] * (2 + MAX_SEG_ROWS * 2)
+        return (
+            "", 3600.0,
+            gr.update(),                            # video_info
+            gr.update(value=None, visible=False),   # video_player
+            gr.update(visible=False),               # frame_sl
+            gr.update(visible=False),               # btn_load
+            gr.update(visible=False),               # calib_image
+            *empty_sliders,
+        )
 
     fps, total, dur = video_duration(path)
     mm, ss = int(dur // 60), int(dur % 60)
-    info = (f'<p style="color:#58a6ff;font-size:.9rem;margin:4px 0">'
-            f'⏱ Durata: <b>{mm:02d}:{ss:02d}</b> ({dur:.0f}s) &nbsp;·&nbsp; '
-            f'{fps:.1f} fps</p>'
-            f'<p style="color:#8b949e;font-size:.81rem">'
-            f'Guarda il video, poi premi <b>Estrai Frame per Calibrare</b>.</p>')
+    info = (
+        f'<p style="color:#58a6ff;font-size:.9rem;margin:4px 0">'
+        f'⏱ <b>{mm:02d}:{ss:02d}</b> ({dur:.0f}s) &nbsp;·&nbsp; {fps:.1f} fps</p>'
+        f'<p style="color:#e6edf3;font-size:.85rem;margin:6px 0 2px">'
+        f'<b>Passo 1:</b> guarda il video e scegli un buon frame (tutti e 4 i '
+        f'giocatori visibili, angoli del campo visibili).</p>'
+        f'<p style="color:#e6edf3;font-size:.85rem;margin:2px 0">'
+        f'<b>Passo 2:</b> trascina lo slider per raggiungere quel momento, '
+        f'poi premi <b style="color:#3fb950">Conferma Frame</b>.</p>'
+    )
 
-    # Slider globali (Tab 1): IN=0, OUT=dur
+    # Slider calibrazione: default a 1/3 del video
+    frame_default = dur / 3
+
+    # Slider analisi (Tab 2)
     g_in  = gr.update(maximum=dur, value=0)
     g_out = gr.update(maximum=dur, value=dur)
-    # Slider segmenti (Tab 2): max=dur, OUT default=dur
     s_ins  = [gr.update(maximum=dur, value=0)   for _ in range(MAX_SEG_ROWS)]
     s_outs = [gr.update(maximum=dur, value=dur) for _ in range(MAX_SEG_ROWS)]
 
-    return (path, dur, info,
-            gr.update(value=path, visible=True),   # video_player → mostra
-            gr.update(visible=False),              # calib_image  → nascondi
-            g_in, g_out,
-            *s_ins, *s_outs)
+    return (
+        path, dur, info,
+        gr.update(value=path, visible=True),                          # video_player
+        gr.update(maximum=dur, value=frame_default, step=1, visible=True),  # frame_sl
+        gr.update(visible=True),                                      # btn_load
+        gr.update(visible=False),                                     # calib_image
+        g_in, g_out,
+        *s_ins, *s_outs,
+    )
 
 
-def load_frame(state_video: str, global_in_val: float):
+def load_frame(state_video: str, frame_sl_val: float):
     if not state_video:
         raise gr.Error("Carica prima un video.")
-    frame = extract_calib_frame(state_video, float(global_in_val or 0))
+    frame = extract_calib_frame(state_video, float(frame_sl_val or 0))
     if frame is None:
         raise gr.Error("Impossibile leggere il frame.")
     pts     = []
     overlay = draw_calib_overlay(frame, pts)
-    return (frame, overlay, pts, calib_instruction_html(0),
-            gr.update(interactive=False),   # btn_calib_ok
-            gr.update(visible=False),       # video_player → nascondi
-            gr.update(visible=True))        # calib_image  → mostra
+    return (
+        frame,
+        gr.update(value=overlay, visible=True),  # calib_image: mostra con immagine
+        pts,
+        calib_instruction_html(0),
+        gr.update(interactive=False),            # btn_calib_ok
+        gr.update(visible=False),                # video_player: nascondi
+        gr.update(visible=False),                # frame_sl: nascondi
+        gr.update(visible=False),                # btn_load: nascondi
+    )
 
 
 def on_calib_click(evt: gr.SelectData, state_frame, state_pts: list):
@@ -492,13 +516,13 @@ CSS = "footer { display: none !important; }"
 
 with gr.Blocks(title="PadelVision") as app:
 
-    state_video    = gr.State("")
+    state_video     = gr.State("")
     state_video_dur = gr.State(3600.0)
-    state_frame    = gr.State(None)
-    state_pts      = gr.State([])
-    state_H        = gr.State(None)
-    state_tracking = gr.State(None)
-    state_n_rows   = gr.State(0)
+    state_frame     = gr.State(None)
+    state_pts       = gr.State([])
+    state_H         = gr.State(None)
+    state_tracking  = gr.State(None)
+    state_n_rows    = gr.State(0)
 
     gr.HTML("""
     <div style="background:linear-gradient(135deg,#161b22,#1c2333);
@@ -521,7 +545,7 @@ with gr.Blocks(title="PadelVision") as app:
         with gr.Tab("1 · Video & Calibrazione"):
             with gr.Row():
 
-                # ── Colonna sinistra ────────────────────────────────────────
+                # ── Colonna sinistra: upload + lista punti + conferma ────────
                 with gr.Column(scale=1, min_width=280):
 
                     gr.Markdown("### 📹 Video")
@@ -538,36 +562,48 @@ with gr.Blocks(title="PadelVision") as app:
                     gr.Markdown("### 🎯 Calibrazione campo")
                     gr.HTML(
                         '<p style="color:#8b949e;font-size:.81rem;margin-bottom:6px">'
-                        '<b>Sin/Dx</b> = dalla prospettiva della telecamera '
-                        '(guardi il campo dalla telecamera verso la rete).</p>'
+                        'Dopo aver confermato il frame, clicca i punti sul campo '
+                        'nell\'ordine indicato qui sotto.</p>'
                     )
                     calib_instr = gr.HTML(calib_instruction_html(0))
-                    btn_load = gr.Button(
-                        "📷 Estrai Frame per Calibrare",
-                        variant="secondary", size="sm",
-                    )
                     with gr.Row():
-                        btn_undo  = gr.Button("↩ Annulla", size="sm")
-                        btn_reset = gr.Button("🗑 Reset",   size="sm")
+                        btn_undo  = gr.Button("↩ Annulla ultimo", size="sm")
+                        btn_reset = gr.Button("🗑 Reset",          size="sm")
                     btn_calib_ok = gr.Button(
                         "✅ Conferma Calibrazione",
                         variant="primary", interactive=False,
                     )
                     calib_status = gr.HTML("")
 
-                # ── Colonna destra — video player / frame calibrazione ──────
+                # ── Colonna destra: anteprima video → slider → frame ─────────
                 with gr.Column(scale=2):
-                    # Player video (visibile di default)
+
+                    # 1. Player video — appare dopo upload, scompare dopo "Conferma Frame"
                     video_player = gr.Video(
-                        label="Anteprima — guarda il video per trovare i punti di calibrazione",
+                        label="Anteprima video",
                         interactive=False,
-                        height=440,
-                        visible=True,
+                        height=420,
+                        visible=False,
                     )
-                    # Frame calibrazione (nascosto, appare dopo Estrai Frame)
+
+                    # 2. Slider secondi — appare dopo upload, scompare dopo "Conferma Frame"
+                    frame_sl = gr.Slider(
+                        minimum=0, maximum=3600, value=0, step=1,
+                        label="⏱  Scegli il secondo del frame da usare per la calibrazione",
+                        visible=False,
+                    )
+
+                    # 3. Bottone conferma frame — stesso ciclo di vita dello slider
+                    btn_load = gr.Button(
+                        "🎯  Conferma Frame e Avvia Calibrazione",
+                        variant="primary",
+                        visible=False,
+                    )
+
+                    # 4. Immagine calibrazione — appare dopo "Conferma Frame"
                     calib_image = gr.Image(
-                        label="Frame — clicca per calibrare",
-                        type="numpy", interactive=True, height=440,
+                        label="Clicca i punti sul campo (inizia dalla rete)",
+                        type="numpy", interactive=True, height=460,
                         visible=False,
                     )
 
@@ -576,17 +612,16 @@ with gr.Blocks(title="PadelVision") as app:
         # ══════════════════════════════════════════════════
         with gr.Tab("2 · Analisi"):
 
-            # Clip globale (da Tab 1 IN/OUT)
             gr.HTML(
                 '<p style="color:#8b949e;font-size:.82rem;margin-bottom:8px">'
-                'Imposta l\'intervallo globale con gli slider qui sotto, poi '
-                'aggiungi segmenti se il video contiene più set o più partite.</p>'
+                'Imposta l\'intervallo da analizzare. Usa il Tab 1 per controllare '
+                'i timestamp nel video. Aggiungi segmenti se ci sono più set o cambi campo.</p>'
             )
             with gr.Row():
                 global_in_sl  = gr.Slider(0, 3600, value=0,    step=1,
-                                           label="▶  INIZIO analisi")
+                                           label="▶  INIZIO analisi (secondi)")
                 global_out_sl = gr.Slider(0, 3600, value=3600, step=1,
-                                           label="FINE analisi  ◀")
+                                           label="FINE analisi (secondi)  ◀")
             global_time_lbl = gr.HTML(time_label_html(0, 3600))
 
             gr.HTML('<div style="border-top:1px solid #30363d;margin:16px 0"></div>')
@@ -675,10 +710,10 @@ with gr.Blocks(title="PadelVision") as app:
         # TAB 4 — RISULTATI
         # ══════════════════════════════════════════════════
         with gr.Tab("4 · Risultati"):
-            result_img_players = gr.Image(label="Heatmap Giocatori",   interactive=False)
+            result_img_players = gr.Image(label="Heatmap Giocatori",    interactive=False)
             with gr.Row():
-                result_img_teams = gr.Image(label="Heatmap Squadre",   interactive=False)
-                result_img_zones = gr.Image(label="Zone per Giocatore",interactive=False)
+                result_img_teams = gr.Image(label="Heatmap Squadre",    interactive=False)
+                result_img_zones = gr.Image(label="Zone per Giocatore", interactive=False)
             gr.Markdown("### 📊 Statistiche")
             result_stats  = gr.HTML(
                 '<p style="color:#8b949e">Genera i risultati per vedere le statistiche.</p>'
@@ -689,25 +724,29 @@ with gr.Blocks(title="PadelVision") as app:
     # Wiring
     # ─────────────────────────────────────────────────────────────────────
 
-    # Tab 1 — upload
+    # Tab 1 — upload video
     video_upload.change(
         fn=on_video_upload,
         inputs=[video_upload],
         outputs=[
             state_video, state_video_dur, video_info,
-            video_player, calib_image,
+            video_player, frame_sl, btn_load, calib_image,
             global_in_sl, global_out_sl,
             *seg_in_sls, *seg_out_sls,
         ],
     )
 
-    # Tab 1 — calibrazione
+    # Tab 1 — conferma frame → avvia calibrazione
     btn_load.click(
         fn=load_frame,
-        inputs=[state_video, global_in_sl],
-        outputs=[state_frame, calib_image, state_pts, calib_instr,
-                 btn_calib_ok, video_player, calib_image],
+        inputs=[state_video, frame_sl],
+        outputs=[
+            state_frame, calib_image, state_pts, calib_instr,
+            btn_calib_ok, video_player, frame_sl, btn_load,
+        ],
     )
+
+    # Tab 1 — click sui punti del campo
     calib_image.select(
         fn=on_calib_click,
         inputs=[state_frame, state_pts],
@@ -729,7 +768,7 @@ with gr.Blocks(title="PadelVision") as app:
         outputs=[state_H, calib_status],
     )
 
-    # Tab 1 — slider globale → label tempo
+    # Tab 2 — slider globali → label tempo
     gr.on(
         triggers=[global_in_sl.change, global_out_sl.change],
         fn=time_label_html,
