@@ -186,16 +186,18 @@ def stats_to_html(stats: dict, player_names: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def on_video_upload(path: str):
-    """Carica video: aggiorna player, info durata, slider frame calibrazione e analisi."""
+    """Carica video: estrae frame iniziale, aggiorna slider e info."""
     if not path:
         empty_sliders = [gr.update()] * (2 + MAX_SEG_ROWS * 2)
         return (
             "", 3600.0,
             gr.update(),                            # video_info
-            gr.update(value=None, visible=False),   # video_player
-            gr.update(visible=False),               # frame_sl
-            gr.update(visible=False),               # btn_load
-            gr.update(visible=False),               # calib_image
+            gr.update(value=None, visible=False),   # frame_preview (Tab 1)
+            gr.update(visible=False),               # frame_sl (Tab 1)
+            gr.update(visible=False),               # btn_load (Tab 1)
+            gr.update(visible=False),               # calib_image (Tab 1)
+            gr.update(value=None, visible=False),   # frame_preview_2 (Tab 2)
+            gr.update(visible=False),               # scrub_sl_2 (Tab 2)
             *empty_sliders,
         )
 
@@ -205,15 +207,15 @@ def on_video_upload(path: str):
         f'<p style="color:#58a6ff;font-size:.9rem;margin:4px 0">'
         f'⏱ <b>{mm:02d}:{ss:02d}</b> ({dur:.0f}s) &nbsp;·&nbsp; {fps:.1f} fps</p>'
         f'<p style="color:#e6edf3;font-size:.85rem;margin:6px 0 2px">'
-        f'<b>Passo 1:</b> guarda il video e scegli un buon frame (tutti e 4 i '
-        f'giocatori visibili, angoli del campo visibili).</p>'
+        f'<b>Passo 1:</b> trascina lo slider — il frame si aggiorna in tempo reale.</p>'
         f'<p style="color:#e6edf3;font-size:.85rem;margin:2px 0">'
-        f'<b>Passo 2:</b> trascina lo slider per raggiungere quel momento, '
-        f'poi premi <b style="color:#3fb950">Conferma Frame</b>.</p>'
+        f'<b>Passo 2:</b> quando il frame è buono (tutti e 4 i giocatori visibili), '
+        f'premi <b style="color:#3fb950">Conferma Frame</b>.</p>'
     )
 
-    # Slider calibrazione: default a 1/3 del video
+    # Estrai frame iniziale a 1/3 del video
     frame_default = dur / 3
+    initial_frame = extract_calib_frame(path, frame_default)
 
     # Slider analisi (Tab 2)
     g_in  = gr.update(maximum=dur, value=0)
@@ -223,13 +225,25 @@ def on_video_upload(path: str):
 
     return (
         path, dur, info,
-        gr.update(value=path, visible=True),                          # video_player
-        gr.update(maximum=dur, value=frame_default, step=1, visible=True),  # frame_sl
-        gr.update(visible=True),                                      # btn_load
-        gr.update(visible=False),                                     # calib_image
+        gr.update(value=initial_frame, visible=True),                        # frame_preview (Tab 1)
+        gr.update(maximum=dur, value=frame_default, step=1, visible=True),   # frame_sl (Tab 1)
+        gr.update(visible=True),                                             # btn_load (Tab 1)
+        gr.update(visible=False),                                            # calib_image (Tab 1)
+        gr.update(value=initial_frame, visible=True),                        # frame_preview_2 (Tab 2)
+        gr.update(maximum=dur, value=frame_default, step=1, visible=True),   # scrub_sl_2 (Tab 2)
         g_in, g_out,
         *s_ins, *s_outs,
     )
+
+
+def update_preview(state_video: str, sl_val: float):
+    """Aggiorna il frame preview mentre si muove lo slider."""
+    if not state_video:
+        return gr.update()
+    frame = extract_calib_frame(state_video, float(sl_val or 0))
+    if frame is None:
+        return gr.update()
+    return frame
 
 
 def load_frame(state_video: str, frame_sl_val: float):
@@ -246,7 +260,7 @@ def load_frame(state_video: str, frame_sl_val: float):
         pts,
         calib_instruction_html(0),
         gr.update(interactive=False),            # btn_calib_ok
-        gr.update(visible=False),                # video_player: nascondi
+        gr.update(visible=False),                # frame_preview: nascondi
         gr.update(visible=False),                # frame_sl: nascondi
         gr.update(visible=False),                # btn_load: nascondi
     )
@@ -575,12 +589,12 @@ with gr.Blocks(title="PadelVision") as app:
                     )
                     calib_status = gr.HTML("")
 
-                # ── Colonna destra: anteprima video → slider → frame ─────────
+                # ── Colonna destra: preview frame live → slider → calibrazione ──
                 with gr.Column(scale=2):
 
-                    # 1. Player video — appare dopo upload, scompare dopo "Conferma Frame"
-                    video_player = gr.Video(
-                        label="Anteprima video",
+                    # 1. Preview frame — si aggiorna live mentre muovi lo slider
+                    frame_preview = gr.Image(
+                        label="Anteprima frame (trascina lo slider qui sotto)",
                         interactive=False,
                         height=420,
                         visible=False,
@@ -589,11 +603,11 @@ with gr.Blocks(title="PadelVision") as app:
                     # 2. Slider secondi — appare dopo upload, scompare dopo "Conferma Frame"
                     frame_sl = gr.Slider(
                         minimum=0, maximum=3600, value=0, step=1,
-                        label="⏱  Scegli il secondo del frame da usare per la calibrazione",
+                        label="⏱  Secondo del frame",
                         visible=False,
                     )
 
-                    # 3. Bottone conferma frame — stesso ciclo di vita dello slider
+                    # 3. Bottone conferma frame
                     btn_load = gr.Button(
                         "🎯  Conferma Frame e Avvia Calibrazione",
                         variant="primary",
@@ -612,10 +626,24 @@ with gr.Blocks(title="PadelVision") as app:
         # ══════════════════════════════════════════════════
         with gr.Tab("2 · Analisi"):
 
+            # Preview frame live — per trovare i timestamp IN/OUT
+            frame_preview_2 = gr.Image(
+                label="Anteprima video — trascina lo slider per esplorare",
+                interactive=False,
+                height=380,
+                visible=False,
+            )
+            scrub_sl_2 = gr.Slider(
+                minimum=0, maximum=3600, value=0, step=1,
+                label="⏱  Scorri il video per trovare i secondi di INIZIO e FINE",
+                visible=False,
+            )
+
+            gr.HTML('<div style="border-top:1px solid #30363d;margin:16px 0"></div>')
             gr.HTML(
                 '<p style="color:#8b949e;font-size:.82rem;margin-bottom:8px">'
-                'Imposta l\'intervallo da analizzare. Usa il Tab 1 per controllare '
-                'i timestamp nel video. Aggiungi segmenti se ci sono più set o cambi campo.</p>'
+                'Imposta INIZIO e FINE dell\'analisi. '
+                'Aggiungi segmenti se ci sono più set o cambi campo.</p>'
             )
             with gr.Row():
                 global_in_sl  = gr.Slider(0, 3600, value=0,    step=1,
@@ -730,10 +758,18 @@ with gr.Blocks(title="PadelVision") as app:
         inputs=[video_upload],
         outputs=[
             state_video, state_video_dur, video_info,
-            video_player, frame_sl, btn_load, calib_image,
+            frame_preview, frame_sl, btn_load, calib_image,
+            frame_preview_2, scrub_sl_2,
             global_in_sl, global_out_sl,
             *seg_in_sls, *seg_out_sls,
         ],
+    )
+
+    # Tab 1 — slider muove il frame preview in tempo reale
+    frame_sl.change(
+        fn=update_preview,
+        inputs=[state_video, frame_sl],
+        outputs=[frame_preview],
     )
 
     # Tab 1 — conferma frame → avvia calibrazione
@@ -742,8 +778,15 @@ with gr.Blocks(title="PadelVision") as app:
         inputs=[state_video, frame_sl],
         outputs=[
             state_frame, calib_image, state_pts, calib_instr,
-            btn_calib_ok, video_player, frame_sl, btn_load,
+            btn_calib_ok, frame_preview, frame_sl, btn_load,
         ],
+    )
+
+    # Tab 2 — slider scrub muove il frame preview in tempo reale
+    scrub_sl_2.change(
+        fn=update_preview,
+        inputs=[state_video, scrub_sl_2],
+        outputs=[frame_preview_2],
     )
 
     # Tab 1 — click sui punti del campo
