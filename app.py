@@ -4,7 +4,6 @@ PadelVision — Interfaccia Web (Gradio)
 Avvio:
     python app.py          → http://localhost:7860
     python app.py --share  → link pubblico temporaneo
-    python app.py --port 8080
 """
 
 import argparse
@@ -33,17 +32,16 @@ SEG_TYPES = [
     "Analisi Parziale",
 ]
 
-# Colori ad alto contrasto per l'overlay di calibrazione (RGB)
-# Volutamente evitato il verde puro — mimetizza con il manto del campo
+# Colori overlay calibrazione — alto contrasto, no verde (mimetizza col campo)
 OVERLAY_COLORS = [
-    (255,  60,  60),   # 1 — rosso vivo
-    ( 60, 130, 255),   # 2 — blu brillante
-    (255, 165,   0),   # 3 — arancio
-    (180,  60, 255),   # 4 — viola
-    (  0, 200, 200),   # 5 — teal  [opzionale]
-    (255, 230,   0),   # 6 — giallo [opzionale]
-    (255, 100, 160),   # 7 — rosa   [opzionale]
-    (120, 240, 120),   # 8 — verde  [opzionale]
+    (255,  60,  60),
+    ( 60, 130, 255),
+    (255, 165,   0),
+    (180,  60, 255),
+    (  0, 200, 200),
+    (255, 230,   0),
+    (255, 100, 160),
+    (120, 240, 120),
 ]
 
 
@@ -51,22 +49,19 @@ OVERLAY_COLORS = [
 # Utility
 # ─────────────────────────────────────────────────────────────────────────────
 
-def parse_time(s: str):
-    """Converte 'MM:SS' o '720' → float secondi, o None se vuoto/invalido."""
-    s = (s or "").strip()
-    if not s:
-        return None
-    try:
-        if ":" in s:
-            parts = s.split(":")
-            return int(parts[0]) * 60 + float(parts[1])
-        return float(s)
-    except (ValueError, IndexError):
-        return None
+def fmt_time(s: float) -> str:
+    s = int(s)
+    h, m, ss = s // 3600, (s % 3600) // 60, s % 60
+    return f"{h}:{m:02d}:{ss:02d}" if h > 0 else f"{m:02d}:{ss:02d}"
+
+
+def time_label_html(in_val: float, out_val: float) -> str:
+    return (f'<p style="color:#58a6ff;text-align:center;font-weight:bold;'
+            f'font-size:.95rem;margin:4px 0">'
+            f'▶ {fmt_time(in_val)} &nbsp;→&nbsp; {fmt_time(out_val)} ◀</p>')
 
 
 def video_duration(path: str):
-    """Ritorna (fps, total_frames, duration_s) dal video."""
     cap   = cv2.VideoCapture(path)
     fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -74,18 +69,11 @@ def video_duration(path: str):
     return fps, total, total / fps
 
 
-def extract_calib_frame(video_path: str, in_s: float = None):
-    """Estrae un frame adatto alla calibrazione (vicino all'IN, poi a 1 min, poi 10%)."""
+def extract_calib_frame(video_path: str, in_s: float = 0.0):
     cap   = cv2.VideoCapture(video_path)
     fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    candidates = []
-    if in_s is not None:
-        candidates.append(int((in_s + 5) * fps))   # 5s dopo l'IN
-    candidates += [int(60 * fps), int(total * 0.10), int(total * 0.02), 0]
-
-    for t in candidates:
+    for t in [int((in_s + 5) * fps), int(60 * fps), int(total * 0.10), int(total * 0.02), 0]:
         t = max(0, min(t, total - 1))
         cap.set(cv2.CAP_PROP_POS_FRAMES, t)
         ret, f = cap.read()
@@ -97,15 +85,10 @@ def extract_calib_frame(video_path: str, in_s: float = None):
 
 
 def draw_calib_overlay(frame_rgb: np.ndarray, pts: list) -> np.ndarray:
-    """
-    Overlay per la calibrazione con:
-    - HUD barra in cima completamente opaca + testo BIANCO + pallino colorato
-    - Cerchi colorati ad alto contrasto con bordo bianco + numero su sfondo scuro
-    """
     canvas = frame_rgb.copy()
     h, w   = canvas.shape[:2]
 
-    # ── HUD barra in cima ────────────────────────────────────────────────
+    # HUD opaco in cima
     cv2.rectangle(canvas, (0, 0), (w, 66), (22, 22, 24), -1)
     cv2.rectangle(canvas, (0, 65), (w, 66), (60, 60, 60), -1)
 
@@ -121,24 +104,20 @@ def draw_calib_overlay(frame_rgb: np.ndarray, pts: list) -> np.ndarray:
                     (255, 255, 255), 2, cv2.LINE_AA)
     elif n >= 4:
         cv2.circle(canvas, (22, 33), 11, (50, 220, 90), -1)
-        cv2.putText(canvas, f"✓ {n} punti — premi  Conferma Calibrazione",
+        cv2.putText(canvas, f"✓ {n} punti — premi Conferma Calibrazione",
                     (44, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.88,
                     (255, 255, 255), 2, cv2.LINE_AA)
 
-    # ── Punti già cliccati ────────────────────────────────────────────────
     for i, (px, py) in enumerate(pts):
         c = OVERLAY_COLORS[i % len(OVERLAY_COLORS)]
         cv2.circle(canvas, (int(px), int(py)), 13, c, -1)
         cv2.circle(canvas, (int(px), int(py)), 16, (255, 255, 255), 2)
-        # Numero su sfondo scuro
         num = str(i + 1)
         (tw, th), _ = cv2.getTextSize(num, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
         tx, ty = int(px) + 20, int(py) + 8
-        cv2.rectangle(canvas, (tx - 3, ty - th - 2), (tx + tw + 3, ty + 2),
-                      (0, 0, 0), -1)
+        cv2.rectangle(canvas, (tx - 3, ty - th - 2), (tx + tw + 3, ty + 2), (0, 0, 0), -1)
         cv2.putText(canvas, num, (tx, ty),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-
     return canvas
 
 
@@ -149,35 +128,30 @@ def calib_instruction_html(n_pts: int) -> str:
             ico, col = "✅", "#3fb950"
         elif i == n_pts:
             c   = OVERLAY_COLORS[i % len(OVERLAY_COLORS)]
-            hex_c = "#{:02x}{:02x}{:02x}".format(*c)
-            ico, col = "👉", hex_c
+            col = "#{:02x}{:02x}{:02x}".format(*c)
+            ico = "👉"
         else:
             ico, col = "⬜", "#484f58"
-        opt = " <em style='color:#484f58'>(opzionale)</em>" if i >= 4 else ""
+        opt = " <em style='color:#484f58'>(opz)</em>" if i >= 4 else ""
         items.append(
             f'<li style="color:{col};line-height:1.9;font-size:.87rem">'
             f'{ico} <b>{i+1}.</b> {label}{opt}</li>'
         )
     note = ""
     if n_pts >= 4:
-        note = ('<p style="color:#58a6ff;margin:8px 0 0;font-size:.83rem">'
-                '✓ Minimi raggiunti! Puoi confermare ora.</p>')
+        note = '<p style="color:#58a6ff;font-size:.82rem;margin:6px 0 0">✓ Minimi raggiunti!</p>'
     elif n_pts == 0:
-        note = ('<p style="color:#8b949e;margin:8px 0 0;font-size:.82rem">'
-                'Prima premi <b>Estrai Frame</b>, poi clicca sul campo '
-                'nell\'ordine indicato.</p>')
-    return (f'<ol style="margin:0;padding-left:18px">{"".join(items)}</ol>{note}')
+        note = '<p style="color:#8b949e;font-size:.82rem;margin:6px 0 0">Clicca i punti sul frame a destra.</p>'
+    return f'<ol style="margin:0;padding-left:18px">{"".join(items)}</ol>{note}'
 
 
 def stats_to_html(stats: dict, player_names: dict) -> str:
     if not stats:
-        return "<p style='color:#8b949e'>Nessuna statistica disponibile.</p>"
-
-    def sk(pid):
-        return (0 if stats[pid].get("team", "B") == "A" else 1, pid)
+        return "<p style='color:#8b949e'>Nessuna statistica.</p>"
 
     rows = ""
-    for pid in sorted(stats.keys(), key=sk):
+    for pid in sorted(stats.keys(),
+                      key=lambda p: (0 if stats[p].get("team","B")=="A" else 1, p)):
         s    = stats[pid]
         team = s.get("team", "?")
         bc   = "#3b82f6" if team == "A" else "#ef4444"
@@ -209,32 +183,49 @@ def stats_to_html(stats: dict, player_names: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Event handlers
+# Handlers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def on_video_upload(path: str):
+    """Carica video: aggiorna player, info durata, max di tutti gli slider."""
     if not path:
-        return "", '<p style="color:#8b949e">Nessun video caricato.</p>'
-    _, _, dur = video_duration(path)
+        empty = [gr.update()] * (2 + MAX_SEG_ROWS * 2)
+        return "", 3600.0, gr.update(), gr.update(), *empty
+
+    fps, total, dur = video_duration(path)
     mm, ss = int(dur // 60), int(dur % 60)
     info = (f'<p style="color:#58a6ff;font-size:.9rem;margin:4px 0">'
-            f'⏱ Durata: <b>{mm:02d}:{ss:02d}</b> ({dur:.0f}s)</p>'
-            f'<p style="color:#8b949e;font-size:.82rem">'
-            f'Imposta IN/OUT se vuoi analizzare solo una parte, '
-            f'poi clicca <b>Estrai Frame</b>.</p>')
-    return path, info
+            f'⏱ Durata: <b>{mm:02d}:{ss:02d}</b> ({dur:.0f}s) &nbsp;·&nbsp; '
+            f'{fps:.1f} fps</p>'
+            f'<p style="color:#8b949e;font-size:.81rem">'
+            f'Guarda il video, poi premi <b>Estrai Frame per Calibrare</b>.</p>')
+
+    # Slider globali (Tab 1): IN=0, OUT=dur
+    g_in  = gr.update(maximum=dur, value=0)
+    g_out = gr.update(maximum=dur, value=dur)
+    # Slider segmenti (Tab 2): max=dur, OUT default=dur
+    s_ins  = [gr.update(maximum=dur, value=0)   for _ in range(MAX_SEG_ROWS)]
+    s_outs = [gr.update(maximum=dur, value=dur) for _ in range(MAX_SEG_ROWS)]
+
+    return (path, dur, info,
+            gr.update(value=path, visible=True),   # video_player → mostra
+            gr.update(visible=False),              # calib_image  → nascondi
+            g_in, g_out,
+            *s_ins, *s_outs)
 
 
-def load_frame(state_video: str, in_tb: str):
+def load_frame(state_video: str, global_in_val: float):
     if not state_video:
         raise gr.Error("Carica prima un video.")
-    in_s  = parse_time(in_tb)
-    frame = extract_calib_frame(state_video, in_s)
+    frame = extract_calib_frame(state_video, float(global_in_val or 0))
     if frame is None:
-        raise gr.Error("Impossibile leggere il frame dal video.")
+        raise gr.Error("Impossibile leggere il frame.")
     pts     = []
     overlay = draw_calib_overlay(frame, pts)
-    return frame, overlay, pts, calib_instruction_html(0), gr.update(interactive=False)
+    return (frame, overlay, pts, calib_instruction_html(0),
+            gr.update(interactive=False),   # btn_calib_ok
+            gr.update(visible=False),       # video_player → nascondi
+            gr.update(visible=True))        # calib_image  → mostra
 
 
 def on_calib_click(evt: gr.SelectData, state_frame, state_pts: list):
@@ -257,43 +248,47 @@ def undo_calib(state_frame, state_pts: list):
 
 
 def reset_calib(state_frame):
-    pts     = []
+    pts = []
     overlay = draw_calib_overlay(state_frame, pts) if state_frame is not None else gr.update()
     return overlay, pts, calib_instruction_html(0), gr.update(interactive=False)
 
 
 def confirm_calib(state_pts: list):
     if len(state_pts) < 4:
-        raise gr.Error("Clicca almeno 4 punti prima di confermare.")
+        raise gr.Error("Clicca almeno 4 punti.")
     dst_pts = [CALIB_POINTS[i][1] for i in range(len(state_pts))]
     try:
         cal = CourtCalibrator.from_click_points(state_pts, dst_pts)
     except ValueError as e:
         raise gr.Error(str(e))
     status = (
-        '<div style="color:#3fb950;font-weight:bold;font-size:.95rem">'
+        '<div style="color:#3fb950;font-weight:bold;font-size:.93rem">'
         f'✅ Calibrazione OK — {len(state_pts)} punti · Vai al Tab 2 → Analisi</div>'
     )
     return cal.H.tolist(), status
 
 
-def add_seg_row(n):
+def add_seg_row(n: int, dur: float):
     new_n = min(n + 1, MAX_SEG_ROWS)
-    updates = [gr.update(visible=i < new_n) for i in range(MAX_SEG_ROWS)]
-    return [new_n] + updates
+    vis      = [gr.update(visible=i < new_n) for i in range(MAX_SEG_ROWS)]
+    out_vals = [gr.update(value=dur) if i == new_n - 1 else gr.update()
+                for i in range(MAX_SEG_ROWS)]
+    lbl_vals = [time_label_html(0, dur) if i == new_n - 1 else gr.update()
+                for i in range(MAX_SEG_ROWS)]
+    return [new_n] + vis + out_vals + lbl_vals
 
 
 def reset_seg_rows():
-    updates = [gr.update(visible=False)] * MAX_SEG_ROWS
-    return [0] + updates
+    vis = [gr.update(visible=False)] * MAX_SEG_ROWS
+    return [0] + vis
 
 
 def run_tracking(
-    state_video, clip_in_str, clip_out_str,
-    si0, si1, si2, si3,     # segment IN times
-    so0, so1, so2, so3,     # segment OUT times
-    st0, st1, st2, st3,     # segment types
-    n_seg_rows, mirror_x, H_state,
+    state_video, global_in, global_out,
+    si0, si1, si2, si3,
+    so0, so1, so2, so3,
+    st0, st1, st2, st3,
+    n_seg_rows, H_state,
     progress=gr.Progress(),
 ):
     if not state_video:
@@ -305,34 +300,23 @@ def run_tracking(
     tracker    = PlayerTracker()
 
     fps_v, total_frames, total_dur = video_duration(state_video)
+    g_in  = float(global_in  or 0)
+    g_out = float(global_out or total_dur)
 
-    # ── Calcola clip globale ──────────────────────────────────────────────
-    global_in  = parse_time(clip_in_str)  or 0.0
-    global_out = parse_time(clip_out_str) or total_dur
-
-    # ── Costruisce lista intervalli ───────────────────────────────────────
-    raw_segs = list(zip(
-        [si0, si1, si2, si3],
-        [so0, so1, so2, so3],
-        [st0, st1, st2, st3],
-    ))
-
-    intervals = []  # [(start_s, end_s, label)]
+    # Costruisce intervalli
+    raw = list(zip([si0,si1,si2,si3], [so0,so1,so2,so3], [st0,st1,st2,st3]))
+    intervals = []
     if n_seg_rows == 0:
-        # Nessun segmento → analisi unica sull'intervallo globale
-        intervals = [(global_in, global_out, "Analisi")]
+        intervals = [(g_in, g_out, "Analisi")]
     else:
-        for i in range(n_seg_rows):
-            t_in  = parse_time(raw_segs[i][0])
-            t_out = parse_time(raw_segs[i][1])
-            seg_type = raw_segs[i][2] or SEG_TYPES[0]
-            if t_in is not None and t_out is not None and t_out > t_in:
-                # Clip all'intervallo globale
-                t_in  = max(t_in,  global_in)
-                t_out = min(t_out, global_out)
-                intervals.append((t_in, t_out, seg_type))
+        for i in range(int(n_seg_rows)):
+            t_in  = float(raw[i][0] or 0)
+            t_out = float(raw[i][1] or total_dur)
+            stype = raw[i][2] or SEG_TYPES[0]
+            if t_out > t_in:
+                intervals.append((max(t_in, g_in), min(t_out, g_out), stype))
         if not intervals:
-            intervals = [(global_in, global_out, "Analisi")]
+            intervals = [(g_in, g_out, "Analisi")]
 
     n_segs = len(intervals)
     all_seg_tracks     = []
@@ -342,11 +326,11 @@ def run_tracking(
     for seg_i, (start_s, end_s, seg_label) in enumerate(intervals):
         def make_cb(si, ns):
             def cb(frame, total):
-                overall = (si + frame / max(total, 1)) / ns
-                progress(overall, desc=f"Seg {si+1}/{ns}: frame {frame}/{total}")
+                progress((si + frame / max(total, 1)) / ns,
+                         desc=f"Seg {si+1}/{ns}: frame {frame}/{total}")
             return cb
 
-        progress(seg_i / n_segs, desc=f"Segmento {seg_i+1}/{n_segs}: tracking…")
+        progress(seg_i / n_segs, desc=f"Segmento {seg_i+1}/{n_segs}…")
         tracks, fps_result, _ = tracker.track_video(
             state_video, calibrator,
             start_s=start_s, end_s=end_s,
@@ -354,9 +338,8 @@ def run_tracking(
         )
         tracks = PlayerTracker.filter_players(tracks, min_frames=50, max_players=4)
 
-        seg_dir    = os.path.join(OUTPUT_DIR, f"seg{seg_i + 1}")
-        progress((seg_i + 0.85) / n_segs,
-                 desc=f"Segmento {seg_i+1}/{n_segs}: estrazione crop…")
+        seg_dir = os.path.join(OUTPUT_DIR, f"seg{seg_i + 1}")
+        progress((seg_i + 0.85) / n_segs, desc=f"Seg {seg_i+1}: crop…")
         crop_paths = tracker.extract_player_crops(
             state_video, tracks, calibrator, seg_dir
         )
@@ -372,10 +355,9 @@ def run_tracking(
         "n_segments":         n_segs,
         "intervals":          intervals,
         "video_path":         state_video,
-        "mirror_x":           mirror_x,
     }
 
-    # Gallery per tab 3 — già ordinati per avg_y: P1-P2=TeamB, P3-P4=TeamA
+    # Gallery per Tab 3
     galleries = []
     for seg_i in range(MAX_SEG_ROWS):
         items = []
@@ -383,43 +365,34 @@ def run_tracking(
             tracks_s    = all_seg_tracks[seg_i]
             crops_s     = all_seg_crop_paths[seg_i]
             sorted_pids = sorted(tracks_s.keys())
-            _, _, seg_label = intervals[seg_i]
             for slot in range(4):
-                pid      = sorted_pids[slot] if slot < len(sorted_pids) else None
-                path     = crops_s.get(pid) if pid else None
-                team_lbl = "Team B" if slot < 2 else "Team A"
-                caption  = f"P{slot+1} · {team_lbl}"
+                pid     = sorted_pids[slot] if slot < len(sorted_pids) else None
+                path    = crops_s.get(pid) if pid else None
+                caption = f"P{slot+1} · {'Team B' if slot < 2 else 'Team A'}"
                 if path and os.path.exists(path):
                     img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
                     items.append((img, caption))
                 else:
                     items.append((np.zeros((200, 150, 3), dtype=np.uint8),
-                                  caption + " (non disponibile)"))
+                                  caption + " (n/d)"))
         galleries.append(items or [])
 
-    dur_str = f"{int(total_dur//60):02d}:{int(total_dur%60):02d}"
-    seg_labels_html = "".join(
-        f'<li><b>Seg {i+1}:</b> {intervals[i][0]:.0f}s → {intervals[i][1]:.0f}s '
-        f'· <em>{intervals[i][2]}</em></li>'
+    seg_info = "".join(
+        f'<li><b>Seg {i+1}:</b> {fmt_time(intervals[i][0])} → '
+        f'{fmt_time(intervals[i][1])} · <em>{intervals[i][2]}</em></li>'
         for i in range(n_segs)
     )
     status_html = (
-        f'<div style="color:#3fb950;font-weight:bold;font-size:.95rem">'
+        f'<div style="color:#3fb950;font-weight:bold;font-size:.93rem">'
         f'✅ Tracking completato — {n_segs} segmento/i &nbsp;·&nbsp; '
-        f'FPS: {fps_result:.1f} &nbsp;·&nbsp; Durata: {dur_str}</div>'
-        f'<ul style="color:#8b949e;font-size:.83rem;margin:8px 0 0;'
-        f'padding-left:20px">{seg_labels_html}</ul>'
-        f'<p style="color:#8b949e;font-size:.83rem;margin-top:8px">'
+        f'FPS: {fps_result:.1f}</div>'
+        f'<ul style="color:#8b949e;font-size:.82rem;margin:8px 0 0;'
+        f'padding-left:18px">{seg_info}</ul>'
+        f'<p style="color:#8b949e;font-size:.82rem;margin-top:8px">'
         f'Vai al <b>Tab 3 → Giocatori</b> per assegnare i nomi.</p>'
     )
-    mirror_note = ""
-    if mirror_x:
-        mirror_note = ('<p style="color:#ffaa00;font-size:.82rem">'
-                       '⚠️ Mirror X attivo: destra ↔ sinistra invertita nel report.</p>')
-
     return (
-        tracking_state,
-        status_html + mirror_note,
+        tracking_state, status_html,
         galleries[0], galleries[1], galleries[2], galleries[3],
         gr.update(visible=n_segs >= 2),
         gr.update(visible=n_segs >= 3),
@@ -433,14 +406,13 @@ def generate_results(tracking_state,
                      n3_1, n3_2, n3_3, n3_4,
                      n4_1, n4_2, n4_3, n4_4):
     if tracking_state is None:
-        raise gr.Error("Esegui il tracking (Tab 2) prima.")
+        raise gr.Error("Esegui il tracking (Tab 2).")
 
     all_seg_tracks     = tracking_state["all_seg_tracks"]
     all_seg_crop_paths = tracking_state["all_seg_crop_paths"]
     fps                = tracking_state["fps"]
     n_segs             = tracking_state["n_segments"]
     video_path         = tracking_state["video_path"]
-    mirror_x           = tracking_state.get("mirror_x", False)
 
     all_names_flat = [
         [n1_1, n1_2, n1_3, n1_4],
@@ -451,8 +423,7 @@ def generate_results(tracking_state,
 
     all_seg_names = []
     for seg_i in range(n_segs):
-        tracks      = all_seg_tracks[seg_i]
-        sorted_pids = sorted(tracks.keys())
+        sorted_pids = sorted(all_seg_tracks[seg_i].keys())
         seg_names   = {}
         for slot, pid in enumerate(sorted_pids):
             raw = all_names_flat[seg_i][slot] if slot < 4 else ""
@@ -470,14 +441,13 @@ def generate_results(tracking_state,
     merged_tracks = {i + 1: merged_by_name[n] for i, n in enumerate(sorted_names)}
     player_names  = {i + 1: n for i, n in enumerate(sorted_names)}
 
-    # Applica mirror X se richiesto (sin ↔ dx)
-    if mirror_x:
-        merged_tracks = {
-            pid: [(COURT_W - cx, cy, fn) for (cx, cy, fn) in pos]
-            for pid, pos in merged_tracks.items()
-        }
+    # Inverti sempre destra/sinistra (correzione omografia telecamera)
+    merged_tracks = {
+        pid: [(COURT_W - cx, cy, fn) for (cx, cy, fn) in pos]
+        for pid, pos in merged_tracks.items()
+    }
 
-    # Crop: primo disponibile per nome
+    # Crop
     crop_paths_final: dict = {}
     for seg_i in range(n_segs):
         for pid, path in all_seg_crop_paths[seg_i].items():
@@ -500,11 +470,9 @@ def generate_results(tracking_state,
     report_link = (
         f'<div style="margin-top:16px">'
         f'<a href="/file={report_path}" target="_blank" '
-        f'style="background:#238636;color:#fff;padding:9px 22px;'
-        f'border-radius:6px;text-decoration:none;font-weight:700;font-size:.9rem">'
-        f'📄 Apri Report Completo</a>'
-        f'&nbsp;&nbsp;<span style="color:#484f58;font-size:.8rem">{report_path}</span>'
-        f'</div>'
+        f'style="background:#238636;color:#fff;padding:9px 22px;border-radius:6px;'
+        f'text-decoration:none;font-weight:700;font-size:.9rem">'
+        f'📄 Apri Report Completo</a></div>'
     )
 
     return (
@@ -526,13 +494,13 @@ with gr.Blocks(title="PadelVision", css=CSS,
                theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate")) as app:
 
     state_video    = gr.State("")
+    state_video_dur = gr.State(3600.0)
     state_frame    = gr.State(None)
     state_pts      = gr.State([])
     state_H        = gr.State(None)
     state_tracking = gr.State(None)
-    state_n_rows   = gr.State(0)      # righe segmento visibili
+    state_n_rows   = gr.State(0)
 
-    # Header
     gr.HTML("""
     <div style="background:linear-gradient(135deg,#161b22,#1c2333);
                 border-bottom:1px solid #30363d;padding:18px 28px;margin-bottom:4px">
@@ -542,7 +510,8 @@ with gr.Blocks(title="PadelVision", css=CSS,
       <h2 style="margin:0;font-size:1.4rem;font-weight:700;color:#e6edf3">
         Analisi Video Padel</h2>
       <p style="margin:3px 0 0;color:#8b949e;font-size:.83rem">
-        Tab 1: Calibra · Tab 2: Analisi · Tab 3: Nomi · Tab 4: Risultati</p>
+        1: Calibra &nbsp;·&nbsp; 2: Imposta analisi &nbsp;·&nbsp;
+        3: Assegna nomi &nbsp;·&nbsp; 4: Risultati</p>
     </div>""")
 
     with gr.Tabs():
@@ -553,8 +522,9 @@ with gr.Blocks(title="PadelVision", css=CSS,
         with gr.Tab("1 · Video & Calibrazione"):
             with gr.Row():
 
-                # Colonna sinistra
+                # ── Colonna sinistra ────────────────────────────────────────
                 with gr.Column(scale=1, min_width=280):
+
                     gr.Markdown("### 📹 Video")
                     video_upload = gr.File(
                         file_types=["video"],
@@ -562,28 +532,21 @@ with gr.Blocks(title="PadelVision", css=CSS,
                         type="filepath",
                     )
                     video_info = gr.HTML(
-                        '<p style="color:#8b949e;font-size:.83rem">Nessun video caricato.</p>'
+                        '<p style="color:#8b949e;font-size:.83rem">Nessun video.</p>'
                     )
-                    with gr.Row():
-                        clip_in_tb  = gr.Textbox(
-                            label="Analizza DA (MM:SS o sec)",
-                            placeholder="00:00  (default: inizio)",
-                        )
-                        clip_out_tb = gr.Textbox(
-                            label="Analizza FINO A (MM:SS o sec)",
-                            placeholder="fine  (default: fine video)",
-                        )
-                    btn_load = gr.Button("📷 Estrai Frame per Calibrazione",
-                                         variant="secondary", size="sm")
 
                     gr.Markdown("---")
-                    gr.Markdown("### 🎯 Punti di calibrazione")
+                    gr.Markdown("### 🎯 Calibrazione campo")
                     gr.HTML(
-                        '<p style="color:#8b949e;font-size:.82rem;margin-bottom:6px">'
-                        '<b>Sinistro/Destro</b> = dalla prospettiva della telecamera '
-                        '(stai guardando il campo dalla telecamera verso la rete).</p>'
+                        '<p style="color:#8b949e;font-size:.81rem;margin-bottom:6px">'
+                        '<b>Sin/Dx</b> = dalla prospettiva della telecamera '
+                        '(guardi il campo dalla telecamera verso la rete).</p>'
                     )
                     calib_instr = gr.HTML(calib_instruction_html(0))
+                    btn_load = gr.Button(
+                        "📷 Estrai Frame per Calibrare",
+                        variant="secondary", size="sm",
+                    )
                     with gr.Row():
                         btn_undo  = gr.Button("↩ Annulla", size="sm")
                         btn_reset = gr.Button("🗑 Reset",   size="sm")
@@ -593,87 +556,85 @@ with gr.Blocks(title="PadelVision", css=CSS,
                     )
                     calib_status = gr.HTML("")
 
-                # Colonna destra — frame interattivo
+                # ── Colonna destra — video player / frame calibrazione ──────
                 with gr.Column(scale=2):
-                    gr.HTML(
-                        '<p style="color:#8b949e;font-size:.83rem;margin-bottom:6px">'
-                        'Clicca sul campo nell\'ordine indicato a sinistra. '
-                        'Il numero e il colore corrispondono alla lista.</p>'
+                    # Player video (visibile di default)
+                    video_player = gr.Video(
+                        label="Anteprima — guarda il video per trovare i punti di calibrazione",
+                        interactive=False,
+                        height=440,
+                        show_download_button=False,
+                        visible=True,
                     )
+                    # Frame calibrazione (nascosto, appare dopo Estrai Frame)
                     calib_image = gr.Image(
                         label="Frame — clicca per calibrare",
-                        type="numpy", interactive=True, height=540,
+                        type="numpy", interactive=True, height=440,
+                        visible=False,
                     )
 
         # ══════════════════════════════════════════════════
         # TAB 2 — ANALISI
         # ══════════════════════════════════════════════════
         with gr.Tab("2 · Analisi"):
+
+            # Clip globale (da Tab 1 IN/OUT)
+            gr.HTML(
+                '<p style="color:#8b949e;font-size:.82rem;margin-bottom:8px">'
+                'Imposta l\'intervallo globale con gli slider qui sotto, poi '
+                'aggiungi segmenti se il video contiene più set o più partite.</p>'
+            )
             with gr.Row():
+                global_in_sl  = gr.Slider(0, 3600, value=0,    step=1,
+                                           label="▶  INIZIO analisi")
+                global_out_sl = gr.Slider(0, 3600, value=3600, step=1,
+                                           label="FINE analisi  ◀")
+            global_time_lbl = gr.HTML(time_label_html(0, 3600))
 
-                # Colonna sinistra — impostazioni
-                with gr.Column(scale=1, min_width=300):
-                    gr.Markdown("### 🎬 Segmenti da analizzare")
-                    gr.HTML(
-                        '<p style="color:#8b949e;font-size:.82rem;margin-bottom:10px">'
-                        'Aggiungi uno o più range IN→OUT. Se non aggiungi nulla, '
-                        'viene analizzato l\'intero video (secondo i limiti di Tab 1).<br>'
-                        '<b>Cambio Campo</b> = stessi giocatori, lato opposto (fine set).<br>'
-                        '<b>Altra Partita</b> = giocatori diversi.<br>'
-                        '<b>Analisi Parziale</b> = vuoi vedere solo quella porzione.</p>'
-                    )
+            gr.HTML('<div style="border-top:1px solid #30363d;margin:16px 0"></div>')
 
-                    # Righe segmenti dinamiche (max 4)
-                    seg_groups = []
-                    seg_in_tbs   = []
-                    seg_out_tbs  = []
-                    seg_type_dds = []
+            # Segmenti
+            gr.HTML(
+                '<div style="color:#e6edf3;font-weight:700;font-size:.9rem;'
+                'margin-bottom:6px">Segmenti (opzionale)</div>'
+                '<p style="color:#8b949e;font-size:.81rem;margin-bottom:10px">'
+                'Usa + per aggiungere un range. Ogni segmento viene analizzato '
+                'separatamente; i giocatori con lo stesso nome vengono uniti.</p>'
+            )
 
-                    for i in range(MAX_SEG_ROWS):
-                        with gr.Group(visible=False) as sg:
-                            gr.HTML(f'<div style="color:#58a6ff;font-size:.82rem;'
-                                    f'font-weight:700;margin:6px 0 2px">'
-                                    f'Segmento {i+1}</div>')
-                            with gr.Row():
-                                si = gr.Textbox(label="IN  (MM:SS o sec)",
-                                                placeholder="es: 0:00", scale=1)
-                                so = gr.Textbox(label="OUT (MM:SS o sec)",
-                                                placeholder="es: 25:00", scale=1)
-                            st = gr.Dropdown(
-                                label="Tipo segmento",
-                                choices=SEG_TYPES,
-                                value=SEG_TYPES[0],
-                            )
-                        seg_groups.append(sg)
-                        seg_in_tbs.append(si)
-                        seg_out_tbs.append(so)
-                        seg_type_dds.append(st)
+            seg_groups    = []
+            seg_in_sls    = []
+            seg_out_sls   = []
+            seg_type_dds  = []
+            seg_time_lbls = []
 
+            for i in range(MAX_SEG_ROWS):
+                with gr.Group(visible=False) as sg:
+                    gr.HTML(f'<div style="color:#58a6ff;font-size:.82rem;'
+                            f'font-weight:700;margin:8px 0 4px">Segmento {i+1}</div>')
                     with gr.Row():
-                        btn_add_seg   = gr.Button("+ Aggiungi Segmento",
-                                                   variant="secondary", size="sm")
-                        btn_reset_seg = gr.Button("Rimuovi tutti",
-                                                   variant="stop", size="sm")
+                        si = gr.Slider(0, 3600, value=0,    step=1, label="▶ IN",  scale=4)
+                        so = gr.Slider(0, 3600, value=3600, step=1, label="OUT ◀", scale=4)
+                        st = gr.Dropdown(choices=SEG_TYPES, value=SEG_TYPES[0],
+                                         label="Tipo", scale=3)
+                    lbl = gr.HTML(time_label_html(0, 3600))
 
-                    gr.Markdown("---")
-                    gr.Markdown("### ⚙️ Opzioni")
-                    mirror_x_cb = gr.Checkbox(
-                        label="Specchia asse Sin/Dx (se destra e sinistra sono invertite nell'analisi)",
-                        value=False,
-                    )
-                    gr.HTML(
-                        '<p style="color:#8b949e;font-size:.81rem;margin-top:2px">'
-                        'Attiva solo se nell\'analisi un giocatore risulta sul lato '
-                        'opposto rispetto a dove gioca realmente.</p>'
-                    )
+                seg_groups.append(sg)
+                seg_in_sls.append(si)
+                seg_out_sls.append(so)
+                seg_type_dds.append(st)
+                seg_time_lbls.append(lbl)
 
-                    btn_track = gr.Button("▶️ Avvia Analisi", variant="primary")
+            with gr.Row():
+                btn_add_seg   = gr.Button("+ Aggiungi Segmento",
+                                           variant="secondary", size="sm")
+                btn_reset_seg = gr.Button("Rimuovi tutti", variant="stop", size="sm")
 
-                # Colonna destra — status
-                with gr.Column(scale=2):
-                    tracking_status = gr.HTML(
-                        '<div style="color:#8b949e;padding:12px">In attesa...</div>'
-                    )
+            gr.HTML('<div style="border-top:1px solid #30363d;margin:16px 0"></div>')
+            btn_track = gr.Button("▶️ Avvia Analisi", variant="primary")
+            tracking_status = gr.HTML(
+                '<div style="color:#8b949e;padding:8px">In attesa...</div>'
+            )
 
         # ══════════════════════════════════════════════════
         # TAB 3 — NOMI GIOCATORI
@@ -681,36 +642,30 @@ with gr.Blocks(title="PadelVision", css=CSS,
         with gr.Tab("3 · Giocatori"):
             gr.HTML(
                 '<p style="color:#8b949e;margin-bottom:10px">'
-                'Guarda i crop di ogni segmento e scrivi il nome di ogni giocatore. '
-                'I giocatori con lo stesso nome in segmenti diversi vengono uniti '
-                'automaticamente nelle statistiche.</p>'
+                'Guarda i crop e scrivi il nome di ogni giocatore. '
+                'Stessi nomi in segmenti diversi = dati uniti automaticamente.</p>'
             )
-
-            # Righe naming: MAX_SEG_ROWS segmenti × 4 giocatori
             name_groups  = []
             galleries    = []
-            all_name_tbs = []   # flat: [s0p0, s0p1, s0p2, s0p3, s1p0, ...]
+            all_name_tbs = []
 
             for seg_i in range(MAX_SEG_ROWS):
                 with gr.Group(visible=(seg_i == 0)) as ng:
-                    gr.HTML(f'<div style="color:#58a6ff;font-weight:700;'
-                            f'font-size:.95rem;margin:4px 0 8px">'
-                            f'📹 Segmento {seg_i + 1}'
-                            + (" &nbsp;·&nbsp; <em style='color:#8b949e;"
-                               "font-weight:normal'>dopo cambio campo</em>"
-                               if seg_i > 0 else "")
-                            + "</div>")
-                    gal = gr.Gallery(
-                        columns=4, rows=1, height=260, show_label=False,
+                    gr.HTML(
+                        f'<div style="color:#58a6ff;font-weight:700;font-size:.93rem;'
+                        f'margin:4px 0 8px">📹 Segmento {seg_i + 1}'
+                        + (" · <em style='color:#8b949e;font-weight:normal'>"
+                           "dopo cambio campo</em>" if seg_i > 0 else "")
+                        + "</div>"
                     )
+                    gal = gr.Gallery(columns=4, rows=1, height=260, show_label=False)
                     galleries.append(gal)
                     with gr.Row():
                         row_tbs = []
                         for slot in range(4):
-                            team_lbl = "Team B" if slot < 2 else "Team A"
                             tb = gr.Textbox(
-                                label=f"P{slot+1} — {team_lbl}",
-                                placeholder="Nome giocatore...",
+                                label=f"P{slot+1} — {'Team B' if slot < 2 else 'Team A'}",
+                                placeholder="Nome...",
                             )
                             row_tbs.append(tb)
                         all_name_tbs.extend(row_tbs)
@@ -733,19 +688,27 @@ with gr.Blocks(title="PadelVision", css=CSS,
             result_report = gr.HTML("")
 
     # ─────────────────────────────────────────────────────────────────────
-    # Event wiring
+    # Wiring
     # ─────────────────────────────────────────────────────────────────────
 
-    # Tab 1
+    # Tab 1 — upload
     video_upload.change(
         fn=on_video_upload,
         inputs=[video_upload],
-        outputs=[state_video, video_info],
+        outputs=[
+            state_video, state_video_dur, video_info,
+            video_player, calib_image,
+            global_in_sl, global_out_sl,
+            *seg_in_sls, *seg_out_sls,
+        ],
     )
+
+    # Tab 1 — calibrazione
     btn_load.click(
         fn=load_frame,
-        inputs=[state_video, clip_in_tb],
-        outputs=[state_frame, calib_image, state_pts, calib_instr, btn_calib_ok],
+        inputs=[state_video, global_in_sl],
+        outputs=[state_frame, calib_image, state_pts, calib_instr,
+                 btn_calib_ok, video_player, calib_image],
     )
     calib_image.select(
         fn=on_calib_click,
@@ -768,11 +731,28 @@ with gr.Blocks(title="PadelVision", css=CSS,
         outputs=[state_H, calib_status],
     )
 
-    # Tab 2 — segment rows
+    # Tab 1 — slider globale → label tempo
+    gr.on(
+        triggers=[global_in_sl.change, global_out_sl.change],
+        fn=time_label_html,
+        inputs=[global_in_sl, global_out_sl],
+        outputs=[global_time_lbl],
+    )
+
+    # Tab 2 — slider segmenti → label tempo
+    for i in range(MAX_SEG_ROWS):
+        gr.on(
+            triggers=[seg_in_sls[i].change, seg_out_sls[i].change],
+            fn=time_label_html,
+            inputs=[seg_in_sls[i], seg_out_sls[i]],
+            outputs=[seg_time_lbls[i]],
+        )
+
+    # Tab 2 — + / reset segmenti
     btn_add_seg.click(
         fn=add_seg_row,
-        inputs=[state_n_rows],
-        outputs=[state_n_rows] + seg_groups,
+        inputs=[state_n_rows, state_video_dur],
+        outputs=[state_n_rows] + seg_groups + seg_out_sls + seg_time_lbls,
     )
     btn_reset_seg.click(
         fn=reset_seg_rows,
@@ -780,35 +760,30 @@ with gr.Blocks(title="PadelVision", css=CSS,
         outputs=[state_n_rows] + seg_groups,
     )
 
-    # Tab 2 — run tracking
+    # Tab 2 — tracking
     btn_track.click(
         fn=run_tracking,
         inputs=[
-            state_video, clip_in_tb, clip_out_tb,
-            seg_in_tbs[0], seg_in_tbs[1], seg_in_tbs[2], seg_in_tbs[3],
-            seg_out_tbs[0], seg_out_tbs[1], seg_out_tbs[2], seg_out_tbs[3],
+            state_video, global_in_sl, global_out_sl,
+            seg_in_sls[0], seg_in_sls[1], seg_in_sls[2], seg_in_sls[3],
+            seg_out_sls[0], seg_out_sls[1], seg_out_sls[2], seg_out_sls[3],
             seg_type_dds[0], seg_type_dds[1], seg_type_dds[2], seg_type_dds[3],
-            state_n_rows, mirror_x_cb, state_H,
+            state_n_rows, state_H,
         ],
         outputs=[
-            state_tracking,
-            tracking_status,
+            state_tracking, tracking_status,
             galleries[0], galleries[1], galleries[2], galleries[3],
             name_groups[1], name_groups[2], name_groups[3],
         ],
     )
 
     # Tab 3 → Tab 4
-    # all_name_tbs = 16 textbox (4 segs × 4 players)
     btn_results.click(
         fn=generate_results,
         inputs=[state_tracking] + all_name_tbs,
         outputs=[
-            result_img_players,
-            result_img_teams,
-            result_img_zones,
-            result_stats,
-            result_report,
+            result_img_players, result_img_teams, result_img_zones,
+            result_stats, result_report,
         ],
     )
 
@@ -818,15 +793,13 @@ with gr.Blocks(title="PadelVision", css=CSS,
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PadelVision Web UI")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--port",  type=int, default=7860)
     parser.add_argument("--host",  default="127.0.0.1")
     args = parser.parse_args()
 
-    print("\n" + "=" * 52)
-    print("  PadelVision — Web Interface")
-    print("=" * 52)
+    print(f"\n{'='*52}\n  PadelVision — Web Interface\n{'='*52}")
     print(f"  → http://{args.host}:{args.port}\n")
 
     app.launch(
